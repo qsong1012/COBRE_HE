@@ -109,3 +109,10 @@ venv.bak/
 
 # mypy
 .mypy_cache/
+
+
+*sublime*
+sftp*.json
+*test*
+*tmp*
+*.html
