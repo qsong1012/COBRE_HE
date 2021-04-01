@@ -115,7 +115,10 @@ class MLP(nn.Module):
 
     def forward(self, x):
         x = x.mean(dim=1)
-        return self.fc(x)
+        out = {
+            'pred': self.fc(x)
+        }
+        return out
 
 
 class MultiSchedulers(object):
@@ -240,7 +243,8 @@ class HybridFitter:
             num_crops = self.args.num_crops
         elif mode == 'val':
             batch_size = self.args.num_val
-            num_crops = (self.args.patch_size // self.args.crop_size)**2
+            # num_crops = (self.args.patch_size // self.args.crop_size)**2
+            num_crops = self.args.num_crops
         else:
             batch_size = self.args.batch_size
             num_crops = self.args.num_crops
@@ -421,22 +425,25 @@ class HybridFitter:
             # if train_targets[:,1].max() == 0:
             #     print(train_targets)
             #     sys.exit()
-            nbatches = train_imgs.size(0) // self.args.num_patches
             train_imgs = reshape_img_batch(train_imgs, self.args.crop_size)
+
+            nbatches = train_imgs.size(0) // (self.args.num_patches * self.args.num_crops)
 
             data_time.update(time.time() - end)
 
             # forward and backprop
             self.optimizers['sgd'].zero_grad()
             with torch.set_grad_enabled(True):
-                ppi = train_imgs.size(0) // (self.args.batch_size * self.args.num_crops)
-                train_preds = self.model(train_imgs, ppi)
-
-                train_targets = train_targets.view(train_targets.size(0) // ppi, ppi, -1)[:, 0, :]
+                ppi = self.args.num_patches * self.args.num_crops
+                model_outputs = self.model(train_imgs, ppi)
+                train_preds = model_outputs['pred']
+                train_targets = train_targets.view(nbatches, self.args.num_patches, -1)[:, 0, :]
 
                 if self.args.outcome_type == 'survival' and self.args.time_noise > 0:
                     train_targets[:,0] = (train_targets[:,0] + torch.zeros_like(train_targets[:,0]).normal_(mean=0, std=self.args.time_noise)).exp()
                 train_loss = self.criterion.calculate(train_preds, train_targets)
+                train_loss += model_outputs.get('cls_loss', 0)
+
                 train_loss.backward()
 
                 eval_t.update(
@@ -507,11 +514,11 @@ class HybridFitter:
                 map(lambda x: batch_data[x], ['images', 'ids', 'targets']))
 
             val_imgs = reshape_img_batch(val_imgs, self.args.crop_size)
+            nbatches = val_imgs.size(0) // (self.args.num_val * self.args.num_crops)
             # forward
             with torch.set_grad_enabled(False):
-                val_preds = self.model(val_imgs, self.args.num_val)
-                val_targets = val_targets.view(val_targets.size(
-                    0) // self.args.num_val, self.args.num_val, -1)[:, 0, :]
+                val_preds = self.model(val_imgs, self.args.num_val*self.args.num_crops)['pred']
+                val_targets = val_targets.view(nbatches, self.args.num_val, -1)[:, 0, :]
                 eval_v.update(
                     {
                         "ids": val_ids,
@@ -603,7 +610,7 @@ class HybridFitter:
                 map(lambda x: batch_data[x], ['images', 'ids', 'targets']))
             # forward
             with torch.set_grad_enabled(False):
-                pred_features = self.model(pred_imgs)
+                pred_features = self.model(pred_imgs)['pred']
                 pred_preds_p, pred_preds_n, pred_preds_0, pred_w, pred_w_raw = self.model.head(
                     pred_features, 1)
                 torch.save(pred_features.data.cpu(), os.path.join(
