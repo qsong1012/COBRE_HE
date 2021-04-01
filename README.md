@@ -8,6 +8,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 * Pandas, Numpy
 * sklearn
 * tqdm
+* large_image (https://github.com/girder/large_image)
 * warmup_scheduler (https://github.com/ildoonet/pytorch-gradual-warmup-lr)
 * NVIDIA DALI (https://github.com/NVIDIA/DALI)
 * lifelines (https://lifelines.readthedocs.io/en/latest/)
