@@ -26,19 +26,19 @@ This repository contains the complete pipeline to predict patient outcome (categ
 Example: 
 
 ```
-python patch_extraction.py --cancer=LGG --num-cpus=8 --magnification=10 --patch-size=224 
+python utils/patch_extraction.py --cancer=LGG --num-cpus=8 --magnification=10 --patch-size=224 
 ```
 
 ## 2. Extract meta information; setup train/val/test splits
 
 ```
-python create_meta_info.py --cancer=LGG --ffpe-only --magnification=10 --stratify=status
+python utils/create_meta_info.py --cancer=LGG --ffpe-only --magnification=10 --stratify=status
 ```
 
 If the variable is not available in the meta json file, you will need to manually add this variable to the generated `data/meta_clinical_[].csv` file. If this variable is a genetic mutation, such as IDH, downloading this variable from TCGA and merge it to the .csv file can be done by running
 
 ```
-Rscript obtain_gene_mutations.R
+Rscript utils/obtain_gene_mutations.R
 ```
 
 ## 3. Training the deep learning model
