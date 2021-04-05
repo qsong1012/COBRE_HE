@@ -7,8 +7,9 @@ import torch
 import torch.nn as nn
 import glob
 import numpy as np
-from model import HybridModel, HybridFitter
-from utils import log_parlik_loss_cox, get_filename_extensions
+from model.fitter import HybridFitter
+from model.models import HybridModel
+from model.helper import log_parlik_loss_cox, get_filename_extensions
 
 
 parser = argparse.ArgumentParser(description='Hybrid MIL Model')
@@ -18,13 +19,16 @@ parser.add_argument('--anneal-freq',
 parser.add_argument('--backbone',
                     type=str, default='resnet-18',
                     help='backbone model, for example, resnet-50, mobilenet, etc')
+parser.add_argument('--cancer',
+                    type=str, default='LGG',
+                    help='Cancer type, such as LGG, BRCA, etc')
 parser.add_argument('--crop-size',
                     type=int, default=224,
                     help='size of the crop')
 parser.add_argument('--checkpoints-folder',
                     type=str, default='checkpoints',
                     help='path to the checkpoints folder')
-parser.add_argument('--dropout-p',
+parser.add_argument('--dropout',
                     type=float, default=0,
                     help='dropout rate, not implemented yet')
 parser.add_argument('--e-ne-ratio',
@@ -36,9 +40,6 @@ parser.add_argument('--epochs',
 parser.add_argument('--gamma',
                     type=float, default=0.85,
                     help='rate to reduce learning rate')
-parser.add_argument('--cancer',
-                    type=str, default='LGG',
-                    help='Cancer type, such as LGG, BRCA, etc')
 parser.add_argument('--l1',
                     type=float, default=0,
                     help='intensity of l1 regularization')
@@ -70,8 +71,11 @@ parser.add_argument('--num-val',
                     type=int, default=100,
                     help='number of patches to select from one patient during validation')
 parser.add_argument('--num-workers',
-                    type=int, default=8,
+                    type=int, default=4,
                     help='number of CPU threads')
+parser.add_argument('--num-heads',
+                    type=int, default=8,
+                    help='number of attention heads')
 parser.add_argument('--outcome',
                     type=str, default='',
                     help='name of the outcome variable')
@@ -102,7 +106,7 @@ parser.add_argument('--trainable-layers',
 parser.add_argument('--repeats-per-epoch',
                     type=int, default=100,
                     help='how many times to select one patient during each iteration')
-parser.add_argument('--resume-model-name',
+parser.add_argument('--resume',
                     type=str, default='',
                     help='name of the model to be resumed')
 parser.add_argument('--resume-epoch',
@@ -171,6 +175,8 @@ parser.add_argument('-m', '--mode',
 
 args = parser.parse_args()
 
+
+os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
 def get_checkpoint_epoch(fname):
     return os.path.basename(fname).split(".")[0]
@@ -290,13 +296,13 @@ if __name__ == '__main__':
     writer = {}
     file_mode = 'w'  # write to a new log file
     # if we want to resume previous training
-    if len(args.resume_model_name):
+    if len(args.resume):
         resume_checkpoint = True
 
-        checkpoint_to_resume = get_resume_checkpoint(args.resume_model_name, args.resume_epoch)
+        checkpoint_to_resume = get_resume_checkpoint(args.resume, args.resume_epoch)
         if args.resume_train:
             # use the model name
-            model_name = args.resume_model_name
+            model_name = args.resume
             TIMESTR = model_name.split('-')[0]
             file_mode = 'a'
 
@@ -324,7 +330,8 @@ if __name__ == '__main__':
 
     data_dir = 'data'
 
-    patch_meta_file = os.path.join(args.root_dir, 'data/patches_meta_%s.pickle' % EXT_DATA)
+    patch_meta_file = 'data/patches_meta_%s.pickle' % EXT_DATA
+    writer['meta'].info('loading patch meta from %s' % patch_meta_file)
     df_cmb = pd.read_pickle(patch_meta_file)
 
     ########################################
@@ -366,9 +373,11 @@ if __name__ == '__main__':
         pretrain=args.pretrain,
         outcome_dim=num_classes,
         outcome_type=args.outcome_type,
-        random_seed=1,
-        head='avg'
+        random_seed=args.random_seed_torch,
+        dropout=args.dropout
     )
+
+    writer['meta'].info(model)
 
     hf = HybridFitter(
         model=model,
@@ -395,9 +404,5 @@ if __name__ == '__main__':
         hf.fit(
             meta_pickle,
             checkpoints_folder=checkpoints_folder)
-
-    elif args.mode == 'predict':
-        hf.predict()
-
-    elif args.mode == 'extraction':
-        hf.extract_features(df_test, root_dir=root_dir)
+    else:
+        print("This mode has not been implemented!")
