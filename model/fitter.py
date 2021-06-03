@@ -2,65 +2,13 @@ import os
 import re
 import time
 import pandas as pd
-from tqdm import tqdm
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.optim import lr_scheduler
 from .helper import *
-from warmup_scheduler import GradualWarmupScheduler
-from nvidia.dali.plugin.pytorch import DALIGenericIterator
 import shutil
-
-import warnings
-warnings.filterwarnings("ignore", message=r'Please set `reader_name`.*')
-
-
-class MultiSchedulers(object):
-    def __init__(self):
-        self.schedulers = {}
-        self.types = {}
-
-    def add(
-            self,
-            name,
-            optimizer,
-            optimizer_type,
-            warmup_multiplier=1,
-            warmup_epochs=40,
-            **args):
-        if optimizer_type == 'cosine':
-            base_scheduler = lr_scheduler.CosineAnnealingWarmRestarts(optimizer, **args)
-        if optimizer_type == 'step':
-            base_scheduler = lr_scheduler.StepLR(optimizer, **args)
-        if optimizer_type == 'exponential':
-            base_scheduler = lr_scheduler.ExponentialLR(optimizer, **args)
-        if optimizer_type == 'plateau':
-            base_scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, **args)
-
-        self.types[name] = optimizer_type
-        self.schedulers[name] = GradualWarmupScheduler(
-            optimizer,
-            multiplier=warmup_multiplier,
-            total_epoch=warmup_epochs,
-            after_scheduler=base_scheduler)
-
-    def step(
-        self,
-        performance_measure,  # performance measurement
-        epoch,  # current epoch
-        enforce_epoch=100  # only for plateau scheduler
-    ):
-
-        for name in self.schedulers.keys():
-            if self.types[name] == 'plateau':
-                if epoch > enforce_epoch:
-                    self.schedulers[name].step(performance_measure)
-                else:
-                    continue
-            else:
-                self.schedulers[name].step()
-
+from tqdm import tqdm
 
 def format_results(res):
     line = ""
@@ -72,6 +20,14 @@ def format_results(res):
             fmt = "%s: %8.6f\t"
         line += (fmt % (key, val))
     return line
+
+
+def unpack_sample(sample, device):
+    imgs, ids, targets = list(
+        map(lambda x: sample[x], [0,1,2]))
+    imgs, ids, targets = \
+        imgs.to(device), ids.to(device), targets.to(device)
+    return imgs, ids, targets
 
 
 def reshape_img_batch(img_batch, crop_size):
@@ -106,6 +62,7 @@ class HybridFitter:
         self.meta_ds = {}
         self.model_name = model_name
         self.checkpoint_to_resume = checkpoint_to_resume
+        self.best_metric = 0
 
         self.current_epoch = 1
         if len(checkpoint_to_resume):
@@ -124,8 +81,8 @@ class HybridFitter:
         self.model.load_state_dict(ckp['state_dict_model'])
         self.optimizers['adam'].load_state_dict(ckp['state_dict_optimizer_adam'])
         self.optimizers['sgd'].load_state_dict(ckp['state_dict_optimizer_sgd'])
-        self.schedulers.schedulers['adam'].load_state_dict(ckp['state_dict_scheduler_adam'])
-        self.schedulers.schedulers['sgd'].load_state_dict(ckp['state_dict_scheduler_sgd'])
+        self.schedulers['adam'].load_state_dict(ckp['state_dict_scheduler_adam'])
+        self.schedulers['sgd'].load_state_dict(ckp['state_dict_scheduler_sgd'])
         self.current_epoch = ckp['epoch'] + 1
 
     def get_datasets(
@@ -138,43 +95,30 @@ class HybridFitter:
             num_crops = self.args.num_crops
         elif mode == 'val':
             batch_size = self.args.num_val
-            # num_crops = (self.args.patch_size // self.args.crop_size)**2
             num_crops = self.args.num_crops
         else:
             batch_size = self.args.batch_size
             num_crops = self.args.num_crops
 
+        transform = get_data_transforms()[mode]
+
         ds = SlidesDataset(
             data_file=pickle_file,
-            image_dir=self.args.root_dir,
+            image_dir='./',
             crop_size=self.args.crop_size,
             num_crops=num_crops,
             outcome=self.args.outcome,
-            outcome_type=self.args.outcome_type
+            outcome_type=self.args.outcome_type,
+            transform=transform
         )
-        dl = torch.utils.data.DataLoader(
+        self.dataloaders[mode] = torch.utils.data.DataLoader(
             ds,
             shuffle=False,
             batch_size=batch_size,
             num_workers=self.args.num_workers,
             pin_memory=False,
-            drop_last=False if self.args.mode == 'predict' else True
+            drop_last=True if mode == 'train' else False
         )
-
-        iterator = iter(dl)
-        pipe = ExternalSourcePipeline(
-            data_iterator=iterator,
-            batch_size=batch_size,
-            num_threads=1,
-            device_id=0,
-            mode=mode,
-            crop_size=self.args.crop_size
-        )
-        pipe.build()
-        self.dataloaders[mode] = DALIGenericIterator(
-            [pipe], ['images', 'ids', 'targets'], pickle_file.shape[0])
-
-        del iterator
 
     def prepare_datasets(
             self,
@@ -188,11 +132,17 @@ class HybridFitter:
             _df = pickle_file
 
         if mode == 'train':
-            self.meta_df[mode] = grouped_sample(_df,
-                                                num_patches=self.args.num_patches,
-                                                num_repeats=self.args.repeats_per_epoch,
-                                                stratify=self.args.stratify,
-                                                e_ne_ratio=self.args.e_ne_ratio)
+            if self.args.sampling_ratio is None:
+                sampling_ratio = None
+            else:
+                sampling_ratio = list(map(int, self.args.sampling_ratio.split(',')))
+            self.meta_df[mode] = grouped_sample(
+                    _df, 
+                    stratify_var=self.args.stratify, 
+                    weights=sampling_ratio, 
+                    num_obs=len(_df.submitter_id.unique())*self.args.repeats_per_epoch,
+                    num_patches=self.args.num_patches,
+                    patient_var='submitter_id')
 
             self.writer['meta'].info(self.meta_df[mode].shape)
         elif self.args.sample_id:
@@ -228,52 +178,15 @@ class HybridFitter:
             lr=self.args.lr_head,
             weight_decay=self.args.wd_head)
 
-        self.schedulers = MultiSchedulers()
-        if self.args.scheduler == 'cosine':
-            self.schedulers.add(
-                'adam', self.optimizers['adam'],
-                'cosine', T_0=self.args.anneal_freq)
-            self.schedulers.add('sgd', self.optimizers['sgd'],
-                'cosine', T_0=self.args.anneal_freq)
-        elif self.args.scheduler == 'plateau':
-            self.schedulers.add('adam', self.optimizers['adam'],
-                'plateau', mode='max', factor=0.3, patience=self.args.lr_patience, min_lr=1e-8)
-            self.schedulers.add(
-                'sgd', self.optimizers['sgd'],
-                'plateau', mode='max', factor=0.3, patience=self.args.lr_patience, min_lr=1e-8)
-        elif self.args.scheduler == 'step':
-            self.schedulers.add(
-                'adam', self.optimizers['adam'],
-                'step', gamma=self.args.gamma, step_size=self.args.step_size)
-            self.schedulers.add(
-                'sgd', self.optimizers['sgd'],
-                'step', gamma=self.args.gamma, step_size=self.args.step_size)
-        elif self.args.scheduler == 'exponential':
-            self.schedulers.add(
-                'adam', self.optimizers['adam'],
-                'exponential', gamma=self.args.gamma)
-            self.schedulers.add('sgd', self.optimizers['sgd'],
-                'exponential', gamma=self.args.gamma)
-
-    def freeze_conv_layers(self):
-        for name, param in self.model.backbone.named_parameters():
-            if re.search(self.args.trainable_layers, name):
-                param.requires_grad = True
-            else:
-                param.requires_grad = False
-
-            self.writer['meta'].info("Freezing convolutional layers ....")
-            self.writer['meta'].info('%s-%s' % (name, param.requires_grad))
-
-        # adam optimizer
-        self.reset_optimizer()
-
-    def unfreeze_conv_layers(self):
-        for name, param in self.model.backbone.named_parameters():
-            param.requires_grad = True
-        # adam optimizer
-        self.writer['meta'].info("All convolutional layers are available for training!")
-        self.reset_optimizer()
+        self.schedulers = {}
+        self.schedulers['adam'] = lr_scheduler.CosineAnnealingWarmRestarts(
+            self.optimizers['adam'], 
+            T_0=self.args.cosine_anneal_freq, 
+            T_mult=self.args.cosine_t_mult)
+        self.schedulers['sgd'] = lr_scheduler.CosineAnnealingWarmRestarts(
+            self.optimizers['sgd'], 
+            T_0=self.args.cosine_anneal_freq, 
+            T_mult=self.args.cosine_t_mult)
 
     def train(self, df_train=None, epoch=0):
         self.prepare_datasets(
@@ -315,13 +228,7 @@ class HybridFitter:
         # train over all training data
         for i, sample in enumerate(self.dataloaders['train']):
 
-            batch_data = sample[0]
-            train_imgs, train_ids, train_targets = list(
-                map(lambda x: batch_data[x], ['images', 'ids', 'targets']))
-
-            # if train_targets[:,1].max() == 0:
-            #     print(train_targets)
-            #     sys.exit()
+            train_imgs, train_ids, train_targets = unpack_sample(sample, self.device)
             train_imgs = reshape_img_batch(train_imgs, self.args.crop_size)
 
             nbatches = train_imgs.size(0) // (self.args.num_patches * self.args.num_crops)
@@ -336,12 +243,7 @@ class HybridFitter:
                 train_preds = model_outputs['pred']
 
                 train_targets = train_targets.view(nbatches, self.args.num_patches, -1)[:, 0, :]
-
-                if self.args.outcome_type == 'survival' and self.args.time_noise > 0:
-                    train_targets[:,0] = (train_targets[:,0] + torch.zeros_like(train_targets[:,0]).normal_(mean=0, std=self.args.time_noise)).exp()
                 train_loss = self.criterion.calculate(train_preds, train_targets)
-                train_loss += model_outputs.get('cls_loss', 0)
-
                 train_loss.backward()
 
                 eval_t.update(
@@ -407,16 +309,15 @@ class HybridFitter:
         # forward prop over all validation data
         for i, sample in enumerate(tqdm(self.dataloaders['val'])):
 
-            batch_data = sample[0]
-            val_imgs, val_ids, val_targets = list(
-                map(lambda x: batch_data[x], ['images', 'ids', 'targets']))
-
+            val_imgs, val_ids, val_targets = unpack_sample(sample, self.device)
             val_imgs = reshape_img_batch(val_imgs, self.args.crop_size)
+
             nbatches = val_imgs.size(0) // (self.args.num_val * self.args.num_crops)
             # forward
             with torch.set_grad_enabled(False):
                 val_preds = self.model(val_imgs, self.args.num_val*self.args.num_crops)['pred']
                 val_targets = val_targets.view(nbatches, self.args.num_val, -1)[:, 0, :]
+                val_ids = val_ids.view(nbatches, self.args.num_val, -1)[:, 0, :]
                 eval_v.update(
                     {
                         "ids": val_ids,
@@ -428,15 +329,18 @@ class HybridFitter:
         val_res = eval_v.evaluate()
         val_res['epoch'] = epoch
         val_res['mode'] = 'val'
+        save_path = os.path.join("predictions",self.model_name,"%04d.csv" % epoch)
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        eval_v.save(save_path)
         return val_res
 
-    def fit_epoch(self, pickle_files, epoch=0):
+    def fit_epoch(self, data_dict, epoch=0):
 
         train_res = self.train(
-            pickle_files['train'],
+            data_dict['train'],
             epoch=epoch)
         val_res = self.evaluate(
-            pickle_files['val'],
+            data_dict['val'],
             epoch=epoch)
 
         self.writer['data'].info(format_results(train_res))
@@ -453,14 +357,21 @@ class HybridFitter:
         elif self.args.outcome_type == 'regression':
             performance_measure = torch.tensor(val_res['r2'])
 
-        self.schedulers.step(performance_measure, epoch)
+        self.schedulers['adam'].step()
+        self.schedulers['sgd'].step()
 
         is_best = False
-        if performance_measure > self.es.best:
-            self.es.best = performance_measure
-            print("New best result: %6.4f" % self.es.best)
+        if performance_measure > self.best_metric:
+            self.best_metric = performance_measure
+            print("New best result: %6.4f" % self.best_metric)
             is_best = True
-        self.save_checkpoint(epoch, is_best, self.args.save_interval, self.checkpoints_folder)
+
+        self.save_checkpoint(
+            epoch=epoch,
+            is_best=is_best,
+            save_freq=self.args.save_interval,
+            checkpoints_folder=self.checkpoints_folder
+            )
 
         if epoch >= 100:
             if self.es.step(performance_measure):
@@ -479,8 +390,8 @@ class HybridFitter:
             'state_dict_model': self.model.state_dict(),
             'state_dict_optimizer_adam': self.optimizers['adam'].state_dict(),
             'state_dict_optimizer_sgd': self.optimizers['sgd'].state_dict(),
-            'state_dict_scheduler_adam': self.schedulers.schedulers['adam'].state_dict(),
-            'state_dict_scheduler_sgd': self.schedulers.schedulers['sgd'].state_dict(),
+            'state_dict_scheduler_adam': self.schedulers['adam'].state_dict(),
+            'state_dict_scheduler_sgd': self.schedulers['sgd'].state_dict(),
         }
         # remaining things related to training
         os.makedirs(checkpoints_folder, exist_ok=True)
@@ -500,7 +411,7 @@ class HybridFitter:
 
     def fit(
         self,
-        pickle_files,
+        data_dict,
         checkpoints_folder='checkpoints'
     ):
 
@@ -508,7 +419,7 @@ class HybridFitter:
 
         for epoch in range(self.current_epoch, self.args.epochs + 1):
             return_code = self.fit_epoch(
-                pickle_files,
+                data_dict,
                 epoch=epoch)
             if return_code:
                 break

@@ -9,8 +9,6 @@ This repository contains the complete pipeline to predict patient outcome (categ
 * sklearn
 * tqdm
 * large_image (https://github.com/girder/large_image)
-* warmup_scheduler (https://github.com/ildoonet/pytorch-gradual-warmup-lr)
-* NVIDIA DALI (https://github.com/NVIDIA/DALI)
 * lifelines (https://lifelines.readthedocs.io/en/latest/)
 
 # Usage
@@ -47,10 +45,10 @@ Example:
 
 * Classification
 ```
-python train.py --cancer=LGG --magnification=10 --stratify=idh -b=8 --repeats-per-epoch=10 --num-patches=8 --num-val=100 --sample-id --save-interval=10 --outcome-type=classification --outcome=idh --inner-fold=3 --scale-lr --pretrain --split=00 --lr-backbone=1e-4 --lr-head=1e-4
+python train.py -b=8 --repeats-per-epoch=10 --num-patches=8 --num-val=100 --sample-id --save-interval=10 --outcome-type=classification --outcome=idh --pretrain --lr-backbone=1e-5 --lr-head=1e-5
 ```
 
 * Survival
 ```
-python train.py --cancer=LGG --magnification=10 --stratify=status -b=8 --repeats-per-epoch=10 --num-patches=8 --num-val=100 --sample-id --save-interval=10 --outcome-type=survival --inner-fold=3 --scale-lr --e-ne-ratio=1to3 --pretrain --split=00 --time-noise=1.0
+python train.py --stratify=status --sampling-ratio=1,1 -b=8 --repeats-per-epoch=10 --num-patches=8 --num-val=100 --sample-id --save-interval=10 --outcome-type=survival --pretrain --lr-backbone=1e-5 --lr-head=1e-5
 ```

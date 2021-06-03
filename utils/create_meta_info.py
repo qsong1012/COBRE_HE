@@ -1,3 +1,8 @@
+########################################
+# this file is currently only for preparing meta dataset for survival analysis
+# modification is required if the project is not survival analysis
+########################################
+
 import pandas as pd
 import numpy as np
 import glob
@@ -6,7 +11,9 @@ import argparse
 import logging
 import json
 from sklearn.model_selection import StratifiedKFold
-from utils import get_filename_extensions
+import sys
+sys.path.append('./')
+from model.helper import get_filename_extensions
 
 parser = argparse.ArgumentParser(description='weighted cox model')
 parser.add_argument('--ffpe-only', 
@@ -36,9 +43,6 @@ parser.add_argument('--root',
 parser.add_argument('--stratify', 
                     type=str, default='', 
                     help='when spliting the datasets, stratify on which variable')
-parser.add_argument('-j', '--num-workers', 
-                    type=int, default=10, 
-                    help='number of workers')
 
 
 args = parser.parse_args()
@@ -59,30 +63,6 @@ for arg, value in sorted(vars(args).items()):
 ##################################################
 # The basic survival information
 ##################################################
-def clean_LGG(clinical_data,keep_low=True):
-    # remove missing values for diagnosis variable
-    clinical_data = clinical_data[clinical_data.primary_diagnosis!='--']
-
-    # create low grade gliomas flag variable
-    high_grade = ['Glioblastoma','Oligodendroglioma, anaplastic','Astrocytoma, anaplastic', 
-              'Malignant lymphoma, large B-cell, diffuse, NOS']
-    def filter_diagnosis(row):
-        if row.primary_diagnosis in high_grade:
-            return 0
-        else:
-            return 1
-        
-    clinical_data.loc[:,'low_grade'] = clinical_data.apply(filter_diagnosis, axis=1)
-
-    # filter for low grade gliomas
-    if keep_low:
-        clinical_data_lg = clinical_data[clinical_data.low_grade==1]
-    else:
-        clinical_data_lg = clinical_data[clinical_data.low_grade==0]
-    logging.info("Number of records after filtering for low grade =",len(clinical_data_lg))
-    logging.info("\nPrimary Diagnosis types left:\n",list(clinical_data_lg.primary_diagnosis.unique()))
-    return clinical_data_lg
-
 
 def parse_json(cancer,root_dir):
     fname = os.path.join(root_dir,'data/meta_files/TCGA-%s.json' % cancer)
@@ -130,25 +110,18 @@ def parse_json(cancer,root_dir):
     logging.info(df.shape)
     logging.info(df.submitter_id.unique().shape)
 
-    if cancer == 'LGG':
-        df = clean_LGG(df)
-
-    if cancer == 'LGGH':
-        df = clean_LGG(df,keep_low=False)
+    # preparing the survival outcome
+    # filtering out patients without follow-up information
 
     df['time'] = 0
     df.loc[df.vital_status=='Alive','time'] = df[df.vital_status=='Alive'].days_to_last_follow_up/365
     df.loc[df.vital_status=='Dead','time'] = [np.NaN if x == '--' else int(x)/365 for x in df[df.vital_status=='Dead'].days_to_death.to_list()]
     df['time'] = df.time - df.time.min() + 0.01
 
-    df.groupby('vital_status')['time'].describe()
     df['status'] = 0
     df.loc[df.vital_status=='Dead', 'status'] = 1
-    logging.info(df.submitter_id.unique().shape)
     df = df.loc[~df.time.isna()].copy().reset_index(drop=True)
     logging.info('number of participants after excluding missing time %s' % df.shape[0])
-    df.groupby('vital_status')['time'].describe()
-
     logging.info(df.describe())
     return df[['case_id','submitter_id','vital_status','days_to_death','time','status']]
 

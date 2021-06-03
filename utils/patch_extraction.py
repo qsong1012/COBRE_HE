@@ -4,6 +4,7 @@ import glob
 import tqdm
 import numpy as np
 import skimage.measure
+import istarmap
 import imageio
 from multiprocessing import Pool
 import logging
@@ -17,7 +18,7 @@ parser.add_argument('--patch-size', type=int, default=224)
 parser.add_argument('--min-purple-squares', type=int, default=100)
 args = parser.parse_args()
 
-logging.basicConfig(filename='patch-extraction-%s-%s-%s.log' % (args.cancer,args.magnification,args.patch_size),format='%(message)s',level=logging.DEBUG)
+logging.basicConfig(filename='logs/patch-extraction-%s-%s-%s.log' % (args.cancer,args.magnification,args.patch_size),format='%(message)s',level=logging.DEBUG)
 
 
 ########################################

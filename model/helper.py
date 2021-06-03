@@ -7,11 +7,46 @@ import torch.nn as nn
 import torchvision
 from torch.utils.data import Dataset
 from sklearn.utils import shuffle
-import nvidia.dali.ops as ops
-from nvidia.dali.pipeline import Pipeline
+from torchvision import transforms
 from lifelines.utils import concordance_index
-from sklearn.metrics import roc_auc_score, f1_score
+from sklearn.metrics import roc_auc_score, f1_score, r2_score
 from PIL import Image
+import logging
+import time
+
+
+########################################
+# setup the logging
+########################################
+
+def setup_logger(name, log_file, file_mode, to_console=False):
+    """
+        https://stackoverflow.com/questions/11232230/logging-to-two-files-with-different-settings
+        To setup as many loggers as you want
+    """
+
+    formatter = logging.Formatter('%(message)s')
+
+    handler = logging.FileHandler(log_file, mode=file_mode)
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.INFO)
+    logger.addHandler(handler)
+
+    if to_console:
+        logger.addHandler(logging.StreamHandler())
+
+    return logger
+
+
+def compose_logging(model_name):
+    writer = {}
+    writer["meta"] = setup_logger("meta", os.path.join(
+        "logs", "%s_meta.log" % model_name), 'w', to_console=True)
+    writer["data"] = setup_logger("data", os.path.join(
+        "logs", "%s_data.csv" % model_name), 'w', to_console=True)
+    return writer
 
 
 ###########################################
@@ -166,66 +201,130 @@ class MobileNetV2Updated(nn.Module):
 # Specifically, for survival analysis, we can fixed the ratio of e (events) and ne 
 # (no events) to ensure each batch contains some events.
 
+def unique_shuffle_to_list(x):
+    x = x.unique()
+    np.random.shuffle(x)
+    return x.tolist()
 
-def grouped_sample(
-        df,
-        num_patches=4,
-        num_repeats=100,
-        e_ne_ratio='1to3',
-        stratify=None):
+class FlexLoss:
+    def __init__(self, outcome_type, class_weights=None, device=torch.device('cpu')):
+        assert outcome_type in ['survival', 'classification', 'regression']
+        if class_weights is None:
+            pass
+        else:
+            class_weights = torch.tensor(class_weights).to(device)
 
-    vars_to_drop = [stratify]
-    if stratify is None:
-        pass
+        if outcome_type == 'survival':
+            self.criterion = log_parlik_loss_cox
+        elif outcome_type == 'classification':
+            self.criterion = nn.CrossEntropyLoss(weight=class_weights)
+        else:
+            self.criterion = nn.MSELoss()
+        self.outcome_type = outcome_type
+
+    def calculate(self, pred, target):
+        if self.outcome_type == 'survival':
+            time = target[:, 0].float()
+            event = target[:, 1].int()
+            return self.criterion(pred, time, event)
+
+        elif self.outcome_type == 'classification':
+            return self.criterion(pred, target.long().view(-1))
+
+        else:
+            return self.criterion(pred, target.float())
+
+
+def grouped_sample(data, stratify_var, weights, num_obs=10000, num_patches=4, patient_var='submitter_id', patch_var='file'):
+    #################################
+    # step 1: sample patients
+    if stratify_var is None:
+        data_meta = data[[patient_var]].drop_duplicates()
+        groups = []
+        while len(groups) < num_obs:
+            groups.extend(data_meta.sample(frac=1.)[patient_var].tolist())
     else:
-        vars_to_drop.append(stratify)
+        data_meta = data[[patient_var,stratify_var]].drop_duplicates()
+        ids = data_meta.groupby(stratify_var)[patient_var].apply(unique_shuffle_to_list).tolist()
+        groups = []
+        while len(groups) < num_obs:
+            group = []
+            for j,k in enumerate(weights):
+                while k > 0:
+                    if min(list(map(len,ids))) == 0:
+                        ids = data_meta.groupby(stratify_var)[patient_var].apply(unique_shuffle_to_list).tolist()
+                    group.append(ids[j].pop())
+                    k -= 1
+            np.random.shuffle(group)
+            groups.extend(group)
+    # post processing
+    groups = groups[:num_obs]
 
-    vars_to_drop = list(set(vars_to_drop))
-    vars_to_keep = vars_to_drop.copy()
-    vars_to_keep.append('submitter_id')
-    df_meta = df.drop_duplicates('submitter_id')[vars_to_keep].reset_index(drop=True)
+    dfg = pd.DataFrame(groups,columns=[patient_var])
+    dfg['queue_order'] = dfg.index
+    dfg = dfg.merge(data_meta,on=patient_var).sort_values('queue_order').reset_index(drop=True)
 
-    if e_ne_ratio is not None and stratify == 'status':
-        # oversampling for the under-represented group for suvival analysis
-        num_e_per_batch, num_ne_per_batch = [int(x) for x in e_ne_ratio.split('to')]
-        group_size = num_e_per_batch + num_ne_per_batch
-        num_e = df_meta.loc[df_meta[stratify] == 1].shape[0]
-        num_ne = df_meta.loc[df_meta[stratify] == 0].shape[0]
+    #################################
+    # step 2: sample patches
+    # get the order of occurrence for each patient
+    dfg['dummy_count'] = 1
+    dfg['within_index'] = dfg.groupby(patient_var).dummy_count.cumsum() - 1
 
-        df_e = pd.concat([shuffle(df_meta.loc[df_meta[stratify] == 1])
-                          for _ in range(num_e_per_batch * num_repeats)])
-        random_ids_e = np.concatenate(
-            [np.array(range(num_e * num_repeats)) * group_size + x for x in range(num_e_per_batch)])
-        df_e['random_id'] = random_ids_e
-
-        num_patches_ne = df_e.shape[0] * num_ne_per_batch // num_e_per_batch
-        num_repeats_ne = num_patches_ne // num_ne + 1
-        df_ne = pd.concat([shuffle(df_meta.loc[df_meta[stratify] == 0])
-                           for _ in range(num_repeats_ne)])
-        random_ids_ne = np.concatenate(
-            [np.arange(num_e * num_repeats) * group_size + x for x in range(num_e_per_batch, group_size)])
-        random_ids_ne.sort()
-        df_ne = df_ne.iloc[:num_patches_ne].copy()
-        df_ne['random_id'] = random_ids_ne[:num_patches_ne]
-
-        df_id = pd.concat([df_e, df_ne])
-        df_id.sort_values('random_id', inplace=True)
-
-    else:
-        df_id = pd.concat([shuffle(df_meta) for _ in range(num_repeats)])
-
-    df_id['dummy_count'] = 1
-    df_id['id_of_patient'] = df_id.groupby('submitter_id').dummy_count.cumsum() - 1
-
-    df_patches = df.groupby('submitter_id', as_index=False).sample(
-        num_patches * (df_id.id_of_patient.max() + 1), replace=True)
-    df_patches['id_of_patient'] = df_patches.groupby('submitter_id').file.transform(
+    # sample sufficient amount of patches
+    dfp = data.groupby(patient_var, as_index=False).sample(
+        num_patches * (dfg.within_index.max() + 1), replace=True)
+    # for each patient, determine merge to which occurrence
+    dfp['within_index'] = dfp.groupby(patient_var)[patch_var].transform(
         lambda x: np.arange(x.shape[0]) // num_patches)
 
-    df_sel = df_id.drop(columns=vars_to_drop).merge(
-        df_patches, on=['submitter_id', 'id_of_patient'], how='left')
+    if stratify_var is not None:
+        dfg.drop([stratify_var],axis=1,inplace=True)
+    df_sel = dfg.merge(dfp, on=[patient_var, 'within_index'], how='left')
     return df_sel
 
+
+########################################
+# get the data transforms:
+def reverse_norm(mean, std):
+    mean = torch.tensor(mean, dtype=torch.float32)
+    std = torch.tensor(std, dtype=torch.float32)
+    return (-mean / std).tolist(), (1 / std).tolist()
+
+def get_data_transforms(patch_size=224):
+
+    data_transforms = {
+        'train':
+        transforms.Compose([
+            transforms.ToPILImage(),
+            transforms.ColorJitter(brightness=0.35,
+                                   contrast=0.5,
+                                   saturation=0.1,
+                                   hue=0.16),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomVerticalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                PATH_MEAN, PATH_STD
+            )  # mean and standard deviations for lung adenocarcinoma resection slides
+        ]),
+        'val':
+        transforms.Compose([
+            transforms.Normalize(PATH_MEAN, PATH_STD)
+        ]),
+        'predict':
+        transforms.Compose([
+            transforms.Normalize(PATH_MEAN, PATH_STD)
+        ]),
+        'normalize':
+        transforms.Compose([
+            transforms.Normalize(PATH_MEAN, PATH_STD)
+        ]),
+        'unnormalize':
+        transforms.Compose([
+            transforms.Normalize(*reverse_norm(PATH_MEAN, PATH_STD))
+            ]),
+    }
+    return data_transforms
 
 ###########################################
 #          CUSTOM DATALOADER              #
@@ -246,31 +345,52 @@ class SlidesDataset(Dataset):
             outcome,
             outcome_type,
             crop_size,
-            num_crops):
+            num_crops,
+            features=None,
+            transform=None,
+            ):
 
         self.df = data_file
         self.image_dir = image_dir
         self.crop_size = crop_size
         self.num_crops = num_crops
+        self.transform = transform
 
         if outcome_type == 'survival':
-            self.outcomes = ['time', 'status']
+            self.outcomes = self.df[['time', 'status']].to_numpy().astype(float)
         else:
-            self.outcomes = [outcome]
+            self.outcomes = self.df[[outcome]].to_numpy().astype(float)
+        self.ids = self.df['id_patient'].tolist()
+        self.files = self.df['file'].tolist()
+
+        try:
+            self.random_seeds = self.df['random_id'].tolist()
+        except:
+            self.random_seeds = np.ones(self.df.shape[0])
 
     def __len__(self):
         return self.df.shape[0]
 
     def sample_patch(self, idx):
         idx = idx % self.df.shape[0]
+        fname = self.files[idx]
+        random_seed = self.random_seeds[idx]
 
-        fname = self.df.iloc[idx]['file']
         img_name = os.path.join(self.image_dir, fname)
-        img = np.array(Image.open(img_name))
-        imgs = random_crops(img, self.crop_size, self.num_crops).reshape(-1, self.crop_size, 3)
-
-        sample = (imgs, self.df.iloc[idx]['id_patient'],
-                  self.df.iloc[idx][self.outcomes].to_numpy().astype(float))
+        imgs = np.array(Image.open(img_name))
+        imgs = random_crops(imgs, self.crop_size, self.num_crops).reshape(-1, self.crop_size, 3)
+        if self.transform is None:
+            pass
+        else:
+            random.seed(random_seed)
+            torch.manual_seed(random_seed)
+            imgs = self.transform(torch.tensor(imgs).permute(2,0,1)/255.)
+        sample = (
+            imgs, 
+            self.ids[idx], 
+            # random_seed, 
+            self.outcomes[idx,:]
+            )
         return sample
 
     def __getitem__(self, idx):
@@ -278,9 +398,6 @@ class SlidesDataset(Dataset):
             idx = idx.tolist()
         return self.sample_patch(idx)
 
-
-########################################
-# DALI
 
 def batchsplit(img, nrows, ncols):
     return np.concatenate(
@@ -308,62 +425,6 @@ def random_crops(img, crop_size, n_crops):
         img = random_crop(img, nrows * crop_size, ncols * crop_size)
     splits = batchsplit(img, nrows, ncols)
     return splits[random.sample(range(splits.shape[0]), n_crops)]
-
-
-class ExternalSourcePipeline(Pipeline):
-    def __init__(self, data_iterator, batch_size, num_threads, device_id, mode, crop_size):
-        super(ExternalSourcePipeline, self).__init__(batch_size,
-                                                     num_threads,
-                                                     device_id,
-                                                     seed=12)
-        self.data_iterator = data_iterator
-        self.input = ops.ExternalSource(num_outputs=3)
-        self.flip = ops.Flip(device="gpu")
-        self.should_flip_h = ops.CoinFlip(probability=0.5)
-        self.should_flip_v = ops.CoinFlip(probability=0.5)
-
-        self.color_twist = ops.ColorTwist(device="gpu")  # initializing of the brightness oparator
-        self.brightness_param = ops.Uniform(range=(0.65, 1.35))
-        # initializing of randomize parameters for ops.BrightnessContrast
-        self.contrast_param = ops.Uniform(range=(0.5, 2))
-        self.hue_param = ops.Uniform(range=(-30., 30.))
-        self.saturation_param = ops.Uniform(range=(0.9, 1.1))
-        self.cmn = ops.CropMirrorNormalize(
-            device="gpu",
-            # dtype=types.UINT8,
-            std=[x * 255 for x in PATH_STD],
-            mean=[x * 255 for x in PATH_MEAN],
-            output_layout="CHW")
-
-        self.mode = mode
-
-    def define_graph(self):
-        self.jpegs, self.ids, self.targets = self.input()
-        images = self.jpegs.gpu()
-        images = self.flip(images, horizontal=self.should_flip_h(), vertical=self.should_flip_v())
-        if self.mode == 'train':
-            images = self.color_twist(
-                images,
-                brightness=self.brightness_param(),
-                contrast=self.contrast_param(),
-                hue=self.hue_param(),
-                saturation=self.saturation_param()
-            )  # execution of the ops.BrightnessContrast transformation
-        else:
-            pass
-        images = self.cmn(images)
-        self.ids = self.ids.gpu()
-        self.targets = self.targets.gpu()
-
-        return (images, self.ids, self.targets)
-
-    def iter_setup(self):
-        # the external data iterator is consumed here and fed as input to Pipeline
-        images, ids, targets = self.data_iterator.next()
-        self.feed_input(self.jpegs, images)
-        self.feed_input(self.ids, ids)
-        self.feed_input(self.targets, targets)
-        # self.feed_input(self.events, events)
 
 
 ###########################################
@@ -480,7 +541,6 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
             'auc-2yr': auc_2yr,
             'auc-5yr': auc_5yr
         }
-        return res
 
     elif outcome_type == 'classification':
         f1 = f1_score(targets, preds.argmax(axis=1), average='weighted')
@@ -500,7 +560,14 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
             'auc': auc
         }
 
-        return res
+
+    elif outcome_type == 'regression':
+        r2 = r2_score(targets.reshape(-1), preds.reshape(-1))
+        res = {
+            'r2': r2
+        }
+
+    return res
 
 
 class ModelEvaluation(object):
@@ -547,5 +614,13 @@ class ModelEvaluation(object):
         metrics['loss'] = loss_epoch.item()
 
         return metrics
+
+    def save(self, filename):
+        values = []
+        for k,v in self.data.items():
+            values.append(v)
+        df = pd.DataFrame(np.concatenate(values, 1))
+        df.to_csv(filename)
+
 
 

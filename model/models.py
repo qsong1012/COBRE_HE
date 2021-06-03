@@ -17,11 +17,12 @@ class HybridModel(nn.Module):
             feature_dim=512,
             random_seed=1,
             dropout=0.1,
-            output_features=False
+            output_features=False,
+            device=torch.device("cpu")
             ):
         super(HybridModel, self).__init__()
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.output_features = output_features
+        self.device = device
 
         torch.random.manual_seed(random_seed)
 
