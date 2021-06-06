@@ -3,7 +3,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 ![Model Structure](figure/model-structure.png)
 
 # Requirements
-* python ≥ 3.6
+* python ≥ 3.8
 * Pytorch ≥ 1.7
 * Pandas, Numpy
 * sklearn

@@ -15,7 +15,7 @@ import sys
 sys.path.append('./')
 from model.helper import get_filename_extensions
 
-parser = argparse.ArgumentParser(description='weighted cox model')
+parser = argparse.ArgumentParser(description='Create meta information')
 parser.add_argument('--ffpe-only', 
                     action='store_true', default=False, 
                     help='keep only ffpe slides')

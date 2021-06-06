@@ -10,7 +10,7 @@ from multiprocessing import Pool
 import logging
 import argparse
 
-parser = argparse.ArgumentParser(description='weighted cox model')
+parser = argparse.ArgumentParser(description='Patch extraction')
 parser.add_argument('--cancer', type=str, default='BLCA')
 parser.add_argument('--num-cpus', type=int, default=10)
 parser.add_argument('--magnification', type=int, default=20)
