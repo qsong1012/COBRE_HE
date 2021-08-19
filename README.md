@@ -13,7 +13,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 
 # Usage
 
-## 1. Obtaining the datasets from TCGA
+## 0. Obtaining the datasets from TCGA
 
 * Download WSIs from the TCGA repository, store in `data/WSI_TCGA`
 * Download the meta file (with clinical and demographical information) from the TCGA repository in json, store in `data/meta_files`.
