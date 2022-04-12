@@ -9,7 +9,7 @@ from torch.utils.data import Dataset
 from sklearn.utils import shuffle
 from torchvision import transforms
 from lifelines.utils import concordance_index
-from sklearn.metrics import roc_auc_score, f1_score, r2_score
+from sklearn.metrics import roc_auc_score, f1_score, r2_score, accuracy_score
 from PIL import Image
 import logging
 import time
@@ -296,6 +296,7 @@ def get_data_transforms(patch_size=224):
         'train':
         transforms.Compose([
             transforms.ToPILImage(),
+            transforms.RandomCrop(patch_size),
             transforms.ColorJitter(brightness=0.35,
                                    contrast=0.5,
                                    saturation=0.1,
@@ -309,6 +310,7 @@ def get_data_transforms(patch_size=224):
         ]),
         'val':
         transforms.Compose([
+            transforms.RandomCrop(patch_size),
             transforms.Normalize(PATH_MEAN, PATH_STD)
         ]),
         'predict':
@@ -331,8 +333,8 @@ def get_data_transforms(patch_size=224):
 ###########################################
 
 
-PATH_MEAN = [0.66, 0.52, 0.73]
-PATH_STD = [0.17, 0.20, 0.16]
+PATH_MEAN = [0.8523, 0.7994, 0.8636]
+PATH_STD = [0.1414, 0.2197, 0.0854]
 
 
 ########################################
@@ -544,6 +546,7 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
 
     elif outcome_type == 'classification':
         f1 = f1_score(targets, preds.argmax(axis=1), average='weighted')
+        acc = accuracy_score(targets, preds.argmax(axis=1))
         try:
             if preds.shape[1] > 2:
                 # multi-class
@@ -557,7 +560,8 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
             auc = 0.5
         res = {
             'f1': f1,
-            'auc': auc
+            'auc': auc,
+            'accuracy': acc
         }
 
 
@@ -576,7 +580,7 @@ class ModelEvaluation(object):
         outcome_type='survival',
         loss_function=None,
         mode='train',
-        variables=['ids', 'preds', 'targets'],
+        variables=['preds', 'targets', 'id'],
         device=torch.device('cpu'),
         timestr=None
     ):
@@ -597,9 +601,15 @@ class ModelEvaluation(object):
     def update(self, batch):
         for k, v in batch.items():
             if self.data[k] is None:
-                self.data[k] = v.data.cpu().numpy()
+                if k == 'id':
+                    self.data[k] = [v]
+                else:
+                    self.data[k] = v.data.cpu().numpy()
             else:
-                self.data[k] = np.concatenate([self.data[k], v.data.cpu().numpy()])
+                if k == 'id':
+                    self.data[k].append(v)
+                else:
+                    self.data[k] = np.concatenate([self.data[k], v.data.cpu().numpy()])
 
     def evaluate(self):
         metrics = calculate_metrics(
@@ -607,7 +617,7 @@ class ModelEvaluation(object):
             self.data['targets'],
             outcome_type=self.outcome_type)
 
-        loss_epoch = self.criterion.calculate(
+        loss_epoch = self.criterion(
             torch.tensor(self.data['preds']).to(self.device),
             torch.tensor(self.data['targets']).to(self.device))
 
@@ -619,7 +629,10 @@ class ModelEvaluation(object):
         values = []
         for k,v in self.data.items():
             values.append(v)
-        df = pd.DataFrame(np.concatenate(values, 1))
+#         print(values)
+#         df = pd.DataFrame(np.concatenate(values, 1))
+        df = pd.concat([pd.DataFrame(values[0]), pd.DataFrame(values[1]),
+                        pd.DataFrame(values[2])], 1)
         df.to_csv(filename)
 
 
