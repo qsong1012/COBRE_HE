@@ -16,10 +16,11 @@ from model.loss import FlexLoss
 
 ### Read parameter configuration
 parser = argparse.ArgumentParser(description='load config file')
-parser.add_argument('--config', default=None, help='path to config file')
+parser.add_argument('--config', default='configs/train.yaml', help='path to config file')
 sys_args = parser.parse_args()
 config_file = sys_args.config
 args = BaseTrainConfig(**read_yaml(config_file))
+
 
 
 ### Read data split
@@ -59,21 +60,22 @@ if __name__ == '__main__':
         drop_last = False
         
         train_data = PatientDataset(pids=data_split['train'], num_patches = args.num_patches,
-                                transforms = transform['train'])
+                                transforms = transform['train'], class_label = args.class_label)
         val_data = PatientDataset(pids=data_split['val'], num_patches = args.num_val, 
-                                  transforms = transform['val'])
+                                  transforms = transform['val'], class_label = args.class_label)
         
     elif args.train_level == 'slide':
         drop_last = True
         
         train_data = SlideDataset(pids=data_split['train'], num_patches = args.num_patches,
-                                  transforms = transform['train'])
+                                  transforms = transform['train'], class_label = args.class_label)
         val_data = SlideDataset(pids=data_split['val'], num_patches = args.num_val,
-                                transforms = transform['val'])
+                                transforms = transform['val'], class_label = args.class_label)
     
     train_loader = DataLoader(train_data, batch_size = args.batch_size, shuffle=True, num_workers=4, drop_last=drop_last)
     val_loader = DataLoader(val_data, batch_size = 1, shuffle=True, num_workers=args.num_workers)
     loader = {'train':train_loader, 'val':val_loader}
+    
     
     
     ### Define name of the logs to pre-defined or current time
@@ -98,7 +100,7 @@ if __name__ == '__main__':
         class_weights = None
     elif args.outcome_type == 'classification':
         num_classes = args.num_classes 
-        if args.class_weights is not None:
+        if args.class_weights != '':
             class_weights = list(map(float, args.class_weights.split(',')))
         else:
             class_weights = None
@@ -118,29 +120,25 @@ if __name__ == '__main__':
     
     # use FlexLoss
     criterion = FlexLoss(outcome_type=args.outcome_type, class_weights=class_weights, device=device)
-
     
     # initialize trainer
     hf = HybridFitter(
         model=model,
         writer=writer,
-        transform = transform,
         dataloader = loader,
         checkpoint_to_resume=args.resume,
         timestr=TIMESTR,
         args=args,
         model_name=TIMESTR,
-        loss_function=criterion
+        loss_function=criterion.criterion
     )
     
     
     # fitting the model or evaluate
     if args.mode == 'test':
         pass # will implement later or in a separate script
-    
 #         info_str = hf.evaluate(df_test, epoch=0)
 #         writer['meta'].info(info_str)
-       
 
     elif args.mode == 'train':
         hf.fit(checkpoints_folder=os.path.join(args.checkpoint_dir, TIMESTR))
