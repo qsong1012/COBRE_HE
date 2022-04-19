@@ -154,8 +154,9 @@ class HybridFitter:
             T_0=self.args.cosine_anneal_freq, 
             T_mult=self.args.cosine_t_mult)
 
-    def train(self, df_train=None, epoch=0):
-
+    def train(self, epoch=0):
+        '''Model Training of the current epoch'''
+        
         self.writer['meta'].info('Training from step %s' % epoch)
         # training phase
         self.model.train()
@@ -218,13 +219,14 @@ class HybridFitter:
                 all_head_params = torch.cat([x.view(-1)
                                              for x in list(self.model.head.parameters())])
                 
-                # regularization
-                l1_regularization = self.args.l1 * torch.norm(all_head_params.view(-1), 1)
-                l2_regularization = self.args.l2 * torch.norm(all_head_params.view(-1), 2).pow(2)
-                loss_regularization = l1_regularization + l2_regularization
+                # regularization, not tested, currently l1 and l2 are set to 0
+                # TODO: commented out currently to test, revisit later
+#                 l1_regularization = self.args.l1 * torch.norm(all_head_params.view(-1), 1)
+#                 l2_regularization = self.args.l2 * torch.norm(all_head_params.view(-1), 2).pow(2)
+#                 loss_regularization = l1_regularization + l2_regularization
 
-                loss_regularization.backward()
-                self.optimizers['sgd'].step()
+#                 loss_regularization.backward()
+#                 self.optimizers['sgd'].step()
 
             # update metrics
             losses.update(train_loss.item(), nbatches)
@@ -247,7 +249,8 @@ class HybridFitter:
         train_res['mode'] = 'train'
         return train_res
 
-    def evaluate(self, df_val = None, epoch=0):
+    def evaluate(self, epoch=0):
+        '''Model evaluation of the current epoch'''
 
         self.writer['meta'].info('Starting evaluation')
         # validation phase
@@ -287,7 +290,7 @@ class HybridFitter:
         eval_v.save(save_path)
         return val_res
 
-    def fit_epoch(self, data_dict = None, epoch=0):
+    def fit_epoch(self, epoch=0):
         '''
         Helpter function to fit the model for current epoch and save model
         '''
@@ -364,14 +367,9 @@ class HybridFitter:
             print("Saving new checkpoints!")
             shutil.copy(epoch_output_path, os.path.join(checkpoints_folder, "%04d.pt" % epoch))
 
-    def fit(
-        self,
-        checkpoints_folder='checkpoints'
-    ):
-        '''
-        Model fitting
-        '''
-
+    def fit(self, checkpoints_folder='checkpoints'):
+        '''Model fitting'''
+        
         self.checkpoints_folder = checkpoints_folder
 
         for epoch in range(self.current_epoch, self.args.epochs + 1):
