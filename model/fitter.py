@@ -12,13 +12,37 @@ from tqdm import tqdm
 
 import sys
 import inspect
+
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 sys.path.insert(0, parentdir)
-from dataset import IDHDataset
-from torch.utils.data import DataLoader
+
+# ----------------
+# Helper functions
+# ----------------
+def unpack_sample(sample, device):
+    '''
+    Unpack sample to and send the images and label to device.
+    '''
+    imgs, ids, targets = sample
+#     imgs, ids, targets = list(
+#         map(lambda x: sample[x], [0,1,2]))
+    imgs = imgs.to(device)
+    targets = targets.to(device)
+    return imgs, ids, targets
+
+
+def reshape_img_batch(img_batch, crop_size):
+    '''
+    Reshape image tensor to [batch_size*num_patches, num_channels, crop_size, crop_size]
+    '''
+    return img_batch.view(-1, 3, crop_size, crop_size)
+
 
 def format_results(res):
+    '''
+    Format logging
+    '''
     line = ""
     for key in sorted(res):
         val = res[key]
@@ -30,29 +54,19 @@ def format_results(res):
     return line
 
 
-def unpack_sample(sample, device):
-    imgs, ids, targets = list(
-        map(lambda x: sample[x], [0,1,2]))
-    imgs = imgs.to(device)
-#     ids = ids.to(device) 
-    targets = targets.to(device)
-    return imgs, ids, targets
-
-
-def reshape_img_batch(img_batch, crop_size):
-    return img_batch.view(-1, 3, crop_size, crop_size)
-#     return img_batch.\
-#         view(img_batch.size(0), 3, -1, crop_size, crop_size).\
-#         permute(0, 2, 1, 3, 4).\
-#         contiguous().\
-#         view(-1, 3, crop_size, crop_size)
-
-
 class HybridFitter:
+    '''
+    Helper class for scheduling training and evaluation.
+    model: model to train/evaluate
+    dataloader: Dataloader class
+    writer: logging the result
+    args: arguments passed from configuration file
+    timestr: name of the experiment
+    loss_function: loss function for training
+    '''
     def __init__(
             self,
             model,
-            transform,
             dataloader,
             checkpoint_to_resume='',
             writer=None,
@@ -63,7 +77,6 @@ class HybridFitter:
         self.writer = writer
         self.args = args
         self.criterion = loss_function
-        self.transform = transform
         self.model = model
         self.device = self.model.device
         self.reset_optimizer()
@@ -88,6 +101,9 @@ class HybridFitter:
         self.metric = metrics[self.args.outcome_type]
 
     def resume_checkpoint(self):
+        '''
+        Load pretrained model from last time training.
+        '''
         ckp = torch.load(self.checkpoint_to_resume)
         self.writer['meta'].info("Loading model checkpoints ... Epoch is %s" % ckp['epoch'])
         self.model.load_state_dict(ckp['state_dict_model'])
@@ -98,8 +114,10 @@ class HybridFitter:
         self.current_epoch = ckp['epoch'] + 1
 
 
-
     def reset_optimizer(self):
+        '''
+        Initialize model optimization and learning rate schedulers
+        '''
         conv_params = []
         for name, param in self.model.backbone.named_parameters():
             if re.search('fc', name):
@@ -138,7 +156,6 @@ class HybridFitter:
 
     def train(self, df_train=None, epoch=0):
 
-
         self.writer['meta'].info('Training from step %s' % epoch)
         # training phase
         self.model.train()
@@ -173,27 +190,23 @@ class HybridFitter:
             train_imgs, train_ids, train_targets = unpack_sample(sample, self.device)
             train_imgs = reshape_img_batch(train_imgs, self.args.crop_size)
 
-            nbatches = train_imgs.size(0) // (self.args.num_patches * self.args.num_crops)
+            nbatches = train_imgs.size(0) // (self.args.num_patches * self.args.num_crops) # batch size
 
             data_time.update(time.time() - end)
 
             # forward and backprop
             self.optimizers['sgd'].zero_grad()
             with torch.set_grad_enabled(True):
-#                 ppi = self.args.num_patches * self.args.num_crops
-                ppi = self.args.num_patches
-#                 print('ppi:',ppi)
+                ppi = self.args.num_patches * self.args.num_crops # currently only tested num_crops=1
                 model_outputs = self.model(train_imgs, ppi)
-#                 print('inputs:', train_imgs)
                 train_preds = model_outputs['pred']
 
-#                 train_targets = train_targets.view(nbatches, self.args.num_patches, -1)[:, 0, :]
                 train_loss = self.criterion(train_preds, train_targets)
                 train_loss.backward()
 
                 eval_t.update(
                     {
-#                         "ids": train_ids,
+                        "id": train_ids, ### revisit, currently not updating the id of the images
                         "preds": train_preds,
                         "targets": train_targets
                     }
@@ -204,6 +217,8 @@ class HybridFitter:
 
                 all_head_params = torch.cat([x.view(-1)
                                              for x in list(self.model.head.parameters())])
+                
+                # regularization
                 l1_regularization = self.args.l1 * torch.norm(all_head_params.view(-1), 1)
                 l2_regularization = self.args.l2 * torch.norm(all_head_params.view(-1), 2).pow(2)
                 loss_regularization = l1_regularization + l2_regularization
@@ -233,13 +248,6 @@ class HybridFitter:
         return train_res
 
     def evaluate(self, df_val = None, epoch=0):
-#         self.prepare_datasets(
-#             df_val,
-#             'val',
-#             batch_size=self.args.batch_size)
-#         self.get_datasets(
-#             self.meta_df['val'],
-#             'val')
 
         self.writer['meta'].info('Starting evaluation')
         # validation phase
@@ -258,31 +266,32 @@ class HybridFitter:
             val_imgs = reshape_img_batch(val_imgs, self.args.crop_size)
 
             nbatches = val_imgs.size(0) // (self.args.num_val * self.args.num_crops)
+            
             # forward
             with torch.set_grad_enabled(False):
                 val_preds = self.model(val_imgs, self.args.num_val*self.args.num_crops)['pred']
-#                 val_targets = val_targets.view(nbatches, self.args.num_val, -1)[:, 0, :]
-#                 val_ids = val_ids.view(nbatches, self.args.num_val, -1)[:, 0, :]
                 eval_v.update(
                     {
-#                         "ids": val_ids,
+                        "id": val_ids,
                         "preds": val_preds,
                         "targets": val_targets
                     }
                 )
-
+        
+        # Save the evaluation result of current epoch
         val_res = eval_v.evaluate()
         val_res['epoch'] = epoch
         val_res['mode'] = 'val'
         save_path = os.path.join("predictions",self.model_name,"%04d.csv" % epoch)
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
-#         print(eval_v.values)
         eval_v.save(save_path)
         return val_res
 
     def fit_epoch(self, data_dict = None, epoch=0):
+        '''
+        Helpter function to fit the model for current epoch and save model
+        '''
         train_res = self.train(
-#             data_dict['train'],
             epoch=epoch)
         self.writer['data'].info(format_results(train_res))
         self.schedulers['adam'].step()
@@ -290,16 +299,11 @@ class HybridFitter:
         
         
         val_res = self.evaluate(
-#             data_dict['val'],
             epoch=epoch)
 
-
         self.writer['data'].info(format_results(val_res))
-
-    ########################################
-    # schedule step
-    ########################################
-
+        
+        # Choose the evaluation metrics for outcome type to optimize
         if self.args.outcome_type == 'survival':
             performance_measure = torch.tensor(val_res['c-index'])
         elif self.args.outcome_type == 'classification':
@@ -308,7 +312,7 @@ class HybridFitter:
             performance_measure = torch.tensor(val_res['r2'])
 
 
-
+        # Save best performed model and at every save_interval
         is_best = False
         if performance_measure > self.best_metric:
             self.best_metric = performance_measure
@@ -321,7 +325,9 @@ class HybridFitter:
             save_freq=self.args.save_interval,
             checkpoints_folder=self.checkpoints_folder
             )
-
+        
+        # Early stopping
+        # TODO: not tested, revisit
         if epoch >= self.args.epochs:
             if self.es.step(performance_measure):
                 return 1  # early stop criterion is met, we can stop now
@@ -360,15 +366,16 @@ class HybridFitter:
 
     def fit(
         self,
-#         data_dict,
         checkpoints_folder='checkpoints'
     ):
+        '''
+        Model fitting
+        '''
 
         self.checkpoints_folder = checkpoints_folder
 
         for epoch in range(self.current_epoch, self.args.epochs + 1):
             return_code = self.fit_epoch(
-#                 data_dict,
                 epoch=epoch)
-            if return_code:
+            if return_code: # early stopping
                 break
