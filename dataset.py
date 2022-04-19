@@ -211,13 +211,15 @@ def unique_shuffle_to_list(x):
     np.random.shuffle(x)
     return x.tolist()
 
-# PATH_MEAN = [0.8523, 0.7994, 0.8636]
-# PATH_STD = [0.1414, 0.2197, 0.0854]
+
+
 PATH_MEAN = [0.5,0.5,0.5]
 PATH_STD = [0.25, 0.25, 0.25]
 
-def get_transformation(patch_size=224):
-
+def get_transformation(patch_size=224, mean, std):
+    if mean==None or std==None:
+        mean = PATH_MEAN
+        std = PATH_STD
     data_transforms = {
         'train':
         transforms.Compose([
@@ -230,26 +232,23 @@ def get_transformation(patch_size=224):
             transforms.RandomHorizontalFlip(),
             transforms.RandomVerticalFlip(),
             transforms.ToTensor(),
-            transforms.Normalize(
-                PATH_MEAN, PATH_STD
-            )  # mean and standard deviations for lung adenocarcinoma resection slides
-        ]),
+            transforms.Normalize(mean, std)]),
         'val':
         transforms.Compose([
             transforms.RandomCrop(patch_size),
-            transforms.Normalize(PATH_MEAN, PATH_STD)
+            transforms.Normalize(mean, std)
         ]),
         'predict':
         transforms.Compose([
-            transforms.Normalize(PATH_MEAN, PATH_STD)
+            transforms.Normalize(mean, std)
         ]),
         'normalize':
         transforms.Compose([
-            transforms.Normalize(PATH_MEAN, PATH_STD)
+            transforms.Normalize(mean, std)
         ]),
         'unnormalize':
         transforms.Compose([
-            transforms.Normalize(*reverse_norm(PATH_MEAN, PATH_STD))
+            transforms.Normalize(*reverse_norm(mean, std))
             ]),
     }
     return data_transforms
