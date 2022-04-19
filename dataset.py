@@ -16,16 +16,16 @@ from torchvision import transforms
 
 class PatientDataset(Dataset):
     # TODO: Comment and check functions
-    def __init__(self, pids, num_patches, transforms = None):
+    def __init__(self, pids, num_patches, transforms = None, class_label=None):
         self.random_seed = random.sample(range(0, 10000), len(pids))
         self.pids = pids
         self.num_patches = num_patches
         self.transforms = transforms
-        self.label_map = {'nodepos':1, 'nodeneg':0}
+        self.class_label = class_label # {'nodepos':1, 'nodeneg':0}
         
     def __getitem__(self, idx):
         pid = self.pids[idx]
-        label = self.label_map[pid.parents[0].name]
+        label = self.class_label[pid.parents[0].name]
         images = self.read_random_patches(list(pid.glob('*/*.png')))        
         if self.transforms:
             images_transform = []
@@ -46,9 +46,7 @@ class PatientDataset(Dataset):
         patch_paths = patch_paths[:self.num_patches]
         images = []
         for path in patch_paths:
-#             images.append(tv_F.to_tensor(Image.open(path).convert("RGB")))
             img = np.array(Image.open(path))
-#             img = random_crops(img, 224, 1).reshape(-1, 224, 3)
             img = torch.tensor(img).permute(2,0,1)/255.
             images.append(img)
         images = torch.stack([patch for patch in images])
@@ -62,17 +60,17 @@ class SlideDataset(Dataset):
     num_patches: number of patches to sample from each slide
     transfroms: image augmentation
     '''
-    def __init__(self, pids, num_patches, transforms = None):
+    def __init__(self, pids, num_patches, transforms = None, class_label=None):
         self.pids = pids
         self.slides = self.get_slide_ids(self.pids)
-        self.random_seed = random.sample(range(0, 10000), len(self.slides))
+        self.random_seed = random.sample(range(0, 10000), len(self.slides)) # seed for augmentation
         self.num_patches = num_patches
         self.transforms = transforms
-        self.label_map = {'nodepos':1, 'nodeneg':0} # TODO: change this to not hard code
+        self.class_label = class_label # {'nodepos':1, 'nodeneg':0}
         
     def __getitem__(self, idx):
         slide_id = self.slides[idx] # get path to slide folder
-        label = self.label_map[slide_id.parent.parents[0].name] # get label from folder path
+        label = self.class_label[slide_id.parent.parents[0].name] # get label from folder path
         images = self.read_random_patches(list(slide_id.glob('*.png')))
         
         # apply transformation to each patch in the stack (revisit to optimize)
@@ -98,7 +96,7 @@ class SlideDataset(Dataset):
         return slide_ids
     
     def read_random_patches(self, patch_paths):
-         '''
+        '''
         Sample random pateches from all available patches. 
         Sample without replacement if number of available patches > num_patches.
         Otherwise sample with replacement.
