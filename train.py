@@ -58,17 +58,17 @@ if __name__ == '__main__':
     if args.train_level == 'patient':
         drop_last = False
         
-        train_data = PatientDataset(args, pids=data_split['train'], num_patches = args.num_patches,
+        train_data = PatientDataset(pids=data_split['train'], num_patches = args.num_patches,
                                 transforms = transform['train'])
-        val_data = PatientDataset(args, pids=data_split['val'], num_patches = args.num_val, 
+        val_data = PatientDataset(pids=data_split['val'], num_patches = args.num_val, 
                                   transforms = transform['val'])
         
     elif args.train_level == 'slide':
         drop_last = True
         
-        train_data = SlideDataset(args, pids=data_split['train'], num_patches = args.num_patches,
+        train_data = SlideDataset(pids=data_split['train'], num_patches = args.num_patches,
                                   transforms = transform['train'])
-        val_data = SlideDataset(args,pids=data_split['val'], num_patches = args.num_val,
+        val_data = SlideDataset(pids=data_split['val'], num_patches = args.num_val,
                                 transforms = transform['val'])
     
     train_loader = DataLoader(train_data, batch_size = args.batch_size, shuffle=True, num_workers=4, drop_last=drop_last)
