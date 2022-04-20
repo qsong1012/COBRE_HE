@@ -15,13 +15,7 @@ from model.loss import FlexLoss
 
 
 ### Read parameter configuration
-parser = argparse.ArgumentParser(description='load config file')
-parser.add_argument('--config', default='configs/train.yaml', help='path to config file')
-sys_args = parser.parse_args()
-config_file = sys_args.config
-args = BaseTrainConfig(**read_yaml(config_file))
-
-
+args = load_config()
 
 ### Read data split
 with open(args.data_split, 'rb') as handle:
