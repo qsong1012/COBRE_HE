@@ -23,11 +23,11 @@ with open(args.data_split, 'rb') as handle:
     
     
 ### Read data mean and standard deviation if specified
-if args.data_stats:
+if args.data_stats != '':
     with open(args.data_stats, 'rb') as handle:
         data_stats = pickle.load(handle)
 else:
-    data_stats = {'mean': None, 'std': None}
+    data_stats = {'mean': [0.5,0.5,0.5], 'std': [0.25,0.25,0.25]}
 
 # argument validity assertion
 if args.stratify is not None:
