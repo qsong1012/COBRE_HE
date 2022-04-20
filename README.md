@@ -53,7 +53,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 ```
 
 #### Data Mean and Standard deviation
-* Store the mean and standard deviation as a dictionary of tensors in ```data_stats.pickle``` (see [a relative link](data/data_split.pickle) for an example). The dictionary should follow the structure of
+* Store the mean and standard deviation as a dictionary of tensors in ```data_stats.pickle``` (see [data/data_stats.pickle](data/data_stats.pickle) for an example). The dictionary should follow the structure of
 ```
 {'mean': [0.5,0.5,0.5],
 'std': [0.25, 0.25, 0.25]}
