@@ -1,0 +1,123 @@
+exp_name: !!str COBRE_HE
+
+checkpoint_dir: !!str #path_to_checkpoints
+
+result_dir: !!str #path_to_result
+
+
+
+# specify model structure
+
+backbone: !!str resnet-18
+
+num_classes: !!int 2  #number of outputs of the model, only used for classification
+
+
+# loss function parameters
+
+class_weights: !!str # the weight for each class, e.g. 3,1 for class 0:class 1 = 3:1
+
+outcome_type: !!str classification # choose between classification, survival, regression
+
+
+
+# specify the path of the meta files
+
+data_split: !!str # path_to_datasplit_file
+
+data_stats: !!str 
+
+class_label: # self-defined label encoding
+    nodepos: !!int 1
+    nodeneg: !!int 0
+
+# specify patch manipulations
+
+train_level: !!str slide
+
+crop_size: !!int 224
+
+num_crops: !!int 1
+
+num_patches: !!int 16
+
+
+# learning rate
+lr_backbone: !!float 1e-6
+
+lr_head: !!float 1e-4
+
+cosine_anneal_freq: !!int 100
+
+cosine_t_mult: !!int 1
+
+
+
+# specify experiment details
+
+use_cuda: !!bool True
+
+mode: !!str train
+
+patience: !!int 100
+
+epochs: !!int 500
+
+pretrain: !!bool True
+
+random_seed: !!int 2022
+
+resume: !!str  # path to resume model
+
+
+# data specific arguments
+
+batch_size: !!int 16
+
+stratify: !!str status # only used for survival
+
+sampling_ratio: !!str '3,1' # only used for survival problem
+
+num_workers: !!int 4
+
+
+# model regularization
+
+dropout: !!float 0
+
+wd_backbone: !!float 0.0001
+
+wd_head: !!float 1e-5
+
+l1: !!float 0
+
+l2: !!float 0
+
+
+# evaluation details
+sample_id: !!bool False
+
+num_val: !!int 128
+
+val_batch_size: !!int 1
+
+
+# model monitoring#
+
+timestr: !!str  ## the name of the current experiment, will use current time if leave blank
+
+log_freq: !!int 1
+
+save_interval: !!int 5
+
+
+# unused 
+
+outcome: !!str 
+
+
+
+
+
+
+
