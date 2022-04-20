@@ -15,7 +15,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 
 ## Classification
 
-### 
+### Prepare Dataset
 #### Image Folder Structure
 * Patches should be organized in the following folder structure (class labels --> patients --> slides --> patchs)
 ```
@@ -44,7 +44,23 @@ This repository contains the complete pipeline to predict patient outcome (categ
 │   └── ...
 └── ...
 ```
-###
+#### Train/Val/Test Split file
+* Stored as a dictionary in ```split.pickle```. The dictionary should follow the structure of
+```
+{'train': [path_to_patient1, path_to_patient2, path_to_patient3 ...],
+'val': [path_to_patient4, path_to_patient5, ...],
+'test': [path_to_patient6, path_to_patient7, path_to_patient8 ...]}
+```
+
+#### Data Mean and Standard deviation
+* Store the mean and standard deviation as a dictionary of tensors in ```data_stats.pickle``` (e.g. ```data/data_split.pickle```). The dictionary should follow the structure of
+```
+{'mean': [0.5,0.5,0.5],
+'std': [0.25, 0.25, 0.25]}
+```
+### Model Training
+* run ```python train.py --config configs/config.yaml```. See ```configs/example_config.yaml``` for an example of model configurations.
+
 
 ## Survival (Future work)
 
