@@ -13,13 +13,64 @@ This repository contains the complete pipeline to predict patient outcome (categ
 
 # Usage
 
-## 0. Obtaining the datasets from TCGA
+## Classification
+
+### Prepare Dataset
+#### Image Folder Structure
+* Patches should be organized in the following folder structure (class labels --> patients --> slides --> patchs)
+```
+.
+├── Class1                    # Class folder (e.g. positive class)
+│   ├── Patient1              # Patient folder (e.g. named with patient ID)
+│   │   ├── Slide1            # Slide folder (e.g. named with slide ID)
+│   │   │   ├── patch1.png    # Patch file (e.g. named with patch coordinates)
+│   │   │   ├── patch2.png
+│   │   │   └── ... 
+│   │   ├── Slide2
+│   │   │   ├── patch1.png
+│   │   │   ├── patch2.png
+│   │   │   └── ... 
+│   ├── Patient2              
+│   │   ├── Slide1
+│   │   │   ├── patch1.png
+│   │   │   ├── patch2.png
+│   │   │   └── ... 
+│   │   ├── Slide2
+│   │   │   ├── patch1.png
+│   │   │   ├── patch2.png
+│   │   │   └── ... 
+│   │   └── ... 
+│   ├── Patient3
+│   └── ...
+└── ...
+```
+#### Train/Val/Test Split file
+* Stored as a dictionary in ```split.pickle```. The dictionary should follow the structure of
+```
+{'train': [path_to_patient1, path_to_patient2, path_to_patient3 ...],
+'val': [path_to_patient4, path_to_patient5, ...],
+'test': [path_to_patient6, path_to_patient7, path_to_patient8 ...]}
+```
+
+#### Data Mean and Standard deviation
+* Store the mean and standard deviation as a dictionary of tensors in ```data_stats.pickle``` (see [data/data_stats.pickle](data/data_stats.pickle) for an example). The dictionary should follow the structure of
+```
+{'mean': [0.5,0.5,0.5],
+'std': [0.25, 0.25, 0.25]}
+```
+### Model Training
+* run ```python train.py --config configs/config.yaml```. See ```configs/example_config.yaml``` for an example of model configurations.
+
+
+## Survival (Future work)
+
+### 0. Obtaining the datasets from TCGA
 
 * Download WSIs from the TCGA repository, store in `data/WSI_TCGA`
 * Download the meta file (with clinical and demographical information) from the TCGA repository in json, store in `data/meta_files`.
 
 
-## 1. Create patches from the whole slide images
+### 1. Create patches from the whole slide images
 
 Example: 
 
@@ -27,7 +78,7 @@ Example:
 python utils/patch_extraction.py --cancer=LGG --num-cpus=8 --magnification=10 --patch-size=224 
 ```
 
-## 2. Extract meta information; setup train/val/test splits
+### 2. Extract meta information; setup train/val/test splits
 
 ```
 python utils/create_meta_info.py --cancer=LGG --ffpe-only --magnification=10 --stratify=status
@@ -39,7 +90,7 @@ If the variable is not available in the meta json file, you will need to manuall
 Rscript utils/obtain_gene_mutations.R
 ```
 
-## 3. Training the deep learning model
+### 3. Training the deep learning model
 
 Example:
 
