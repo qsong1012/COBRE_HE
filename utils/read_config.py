@@ -6,8 +6,8 @@ from pathlib import Path
 class BaseTrainConfig():
     def __init__(self, **config):
         self.__dict__.update(config) 
-        self.setup()
-        self.print()
+#         self.setup()
+#         self.print()
     def setup(self):
         try:
             result_dir = Path(self.result_dir)/self.exp_name
@@ -30,7 +30,7 @@ def read_yaml(path):
 
 def load_config():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', '-c', type=str, default='configs/train.yaml')
+    parser.add_argument('--config', '-c', type=str, default=None)
     # parser.add_argument('--log_dir', '-l', type=str, default='log')
     args = parser.parse_args()
     config_file = args.config
