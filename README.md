@@ -18,6 +18,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 ### 
 #### Image Folder Structure
 * Patches should be organized in the following folder structure (class labels --> patients --> slides --> patchs)
+```
 .
 ├── Class1                    # Class folder (e.g. positive class)
 │   ├── Patient1              # Patient folder (e.g. named with patient ID)
@@ -42,6 +43,7 @@ This repository contains the complete pipeline to predict patient outcome (categ
 │   ├── Patient3
 │   └── ...
 └── ...
+```
 ###
 
 ## Survival (Future work)
