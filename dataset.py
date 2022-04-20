@@ -136,9 +136,6 @@ def get_transformation(patch_size=224, mean=[0.5,0.5,0.5], std=[0.25, 0.25, 0.25
     mean: sample mean, default [0.5,0.5,0.5] if not defined
     std: sample std, default [0.25, 0.25, 0.25] if not defined
     '''
-    if mean==None or std==None:
-        mean = PATH_MEAN
-        std = PATH_STD
     data_transforms = {
         'train':
         transforms.Compose([
