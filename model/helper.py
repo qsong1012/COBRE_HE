@@ -9,11 +9,11 @@ from torch.utils.data import Dataset
 from sklearn.utils import shuffle
 from torchvision import transforms
 from lifelines.utils import concordance_index
-from sklearn.metrics import roc_auc_score, f1_score, r2_score
+from sklearn.metrics import roc_auc_score, f1_score, r2_score, accuracy_score
 from PIL import Image
 import logging
 import time
-
+from collections import defaultdict
 
 ########################################
 # setup the logging
@@ -60,36 +60,6 @@ def get_filename_extensions(args):
     ext_split = '%s_by-%s_seed-%s_nest-%s%s' % (args.cancer, args.stratify,
                                                 args.random_seed, args.outer_fold, args.inner_fold)
     return ext_data, ext_experiment, ext_split
-
-
-###########################################
-#             Loss function               #
-###########################################
-
-
-def log_parlik_loss_cox(scores, times=None, events=None):
-    '''
-    scores: values predicted by CNN model
-    times: follow-up time
-    events: 1 for event 0 for censor
-    '''
-    scores = scores.view(-1)
-    times = times.view(-1)
-    events = events.float().view(-1)
-
-    scores = torch.clamp(scores, max=20)  # to avoid too large value after exponential
-    scores_exp = torch.exp(scores)
-    idx = torch.argsort(times, descending=True)
-    times = times[idx]
-    scores = scores[idx]
-    scores_exp = scores_exp[idx]
-    events = events[idx]
-    log_scores = torch.log(torch.cumsum(scores_exp, dim=0) + 1e-5)
-    uncensored_likelihood = scores - log_scores
-    censored_likelihood = torch.mul(uncensored_likelihood, events.type(torch.float32)).sum()
-    num_events = events.sum()
-    loss = torch.div(-censored_likelihood, num_events)
-    return loss
 
 
 ########################################
@@ -191,240 +161,6 @@ class MobileNetV2Updated(nn.Module):
         x = self.dropout(x)
         x = self.fc(x)
         return x
-
-########################################
-#          balanced sampling           #
-########################################
-# On the patient level, each epoch might be too small (several hundred patients).
-# We can repeat all the samples multiple times and randomize them to obtain a larger
-# epoch size.
-# Specifically, for survival analysis, we can fixed the ratio of e (events) and ne 
-# (no events) to ensure each batch contains some events.
-
-def unique_shuffle_to_list(x):
-    x = x.unique()
-    np.random.shuffle(x)
-    return x.tolist()
-
-class FlexLoss:
-    def __init__(self, outcome_type, class_weights=None, device=torch.device('cpu')):
-        assert outcome_type in ['survival', 'classification', 'regression']
-        if class_weights is None:
-            pass
-        else:
-            class_weights = torch.tensor(class_weights).to(device)
-
-        if outcome_type == 'survival':
-            self.criterion = log_parlik_loss_cox
-        elif outcome_type == 'classification':
-            self.criterion = nn.CrossEntropyLoss(weight=class_weights)
-        else:
-            self.criterion = nn.MSELoss()
-        self.outcome_type = outcome_type
-
-    def calculate(self, pred, target):
-        if self.outcome_type == 'survival':
-            time = target[:, 0].float()
-            event = target[:, 1].int()
-            return self.criterion(pred, time, event)
-
-        elif self.outcome_type == 'classification':
-            return self.criterion(pred, target.long().view(-1))
-
-        else:
-            return self.criterion(pred, target.float())
-
-
-def grouped_sample(data, stratify_var, weights, num_obs=10000, num_patches=4, patient_var='submitter_id', patch_var='file'):
-    #################################
-    # step 1: sample patients
-    if stratify_var is None:
-        data_meta = data[[patient_var]].drop_duplicates()
-        groups = []
-        while len(groups) < num_obs:
-            groups.extend(data_meta.sample(frac=1.)[patient_var].tolist())
-    else:
-        data_meta = data[[patient_var,stratify_var]].drop_duplicates()
-        ids = data_meta.groupby(stratify_var)[patient_var].apply(unique_shuffle_to_list).tolist()
-        groups = []
-        while len(groups) < num_obs:
-            group = []
-            for j,k in enumerate(weights):
-                while k > 0:
-                    if min(list(map(len,ids))) == 0:
-                        ids = data_meta.groupby(stratify_var)[patient_var].apply(unique_shuffle_to_list).tolist()
-                    group.append(ids[j].pop())
-                    k -= 1
-            np.random.shuffle(group)
-            groups.extend(group)
-    # post processing
-    groups = groups[:num_obs]
-
-    dfg = pd.DataFrame(groups,columns=[patient_var])
-    dfg['queue_order'] = dfg.index
-    dfg = dfg.merge(data_meta,on=patient_var).sort_values('queue_order').reset_index(drop=True)
-
-    #################################
-    # step 2: sample patches
-    # get the order of occurrence for each patient
-    dfg['dummy_count'] = 1
-    dfg['within_index'] = dfg.groupby(patient_var).dummy_count.cumsum() - 1
-
-    # sample sufficient amount of patches
-    dfp = data.groupby(patient_var, as_index=False).sample(
-        num_patches * (dfg.within_index.max() + 1), replace=True)
-    # for each patient, determine merge to which occurrence
-    dfp['within_index'] = dfp.groupby(patient_var)[patch_var].transform(
-        lambda x: np.arange(x.shape[0]) // num_patches)
-
-    if stratify_var is not None:
-        dfg.drop([stratify_var],axis=1,inplace=True)
-    df_sel = dfg.merge(dfp, on=[patient_var, 'within_index'], how='left')
-    return df_sel
-
-
-########################################
-# get the data transforms:
-def reverse_norm(mean, std):
-    mean = torch.tensor(mean, dtype=torch.float32)
-    std = torch.tensor(std, dtype=torch.float32)
-    return (-mean / std).tolist(), (1 / std).tolist()
-
-def get_data_transforms(patch_size=224):
-
-    data_transforms = {
-        'train':
-        transforms.Compose([
-            transforms.ToPILImage(),
-            transforms.ColorJitter(brightness=0.35,
-                                   contrast=0.5,
-                                   saturation=0.1,
-                                   hue=0.16),
-            transforms.RandomHorizontalFlip(),
-            transforms.RandomVerticalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                PATH_MEAN, PATH_STD
-            )  # mean and standard deviations for lung adenocarcinoma resection slides
-        ]),
-        'val':
-        transforms.Compose([
-            transforms.Normalize(PATH_MEAN, PATH_STD)
-        ]),
-        'predict':
-        transforms.Compose([
-            transforms.Normalize(PATH_MEAN, PATH_STD)
-        ]),
-        'normalize':
-        transforms.Compose([
-            transforms.Normalize(PATH_MEAN, PATH_STD)
-        ]),
-        'unnormalize':
-        transforms.Compose([
-            transforms.Normalize(*reverse_norm(PATH_MEAN, PATH_STD))
-            ]),
-    }
-    return data_transforms
-
-###########################################
-#          CUSTOM DATALOADER              #
-###########################################
-
-
-PATH_MEAN = [0.66, 0.52, 0.73]
-PATH_STD = [0.17, 0.20, 0.16]
-
-
-########################################
-# load slide patches
-class SlidesDataset(Dataset):
-    def __init__(
-            self,
-            data_file,
-            image_dir,
-            outcome,
-            outcome_type,
-            crop_size,
-            num_crops,
-            features=None,
-            transform=None,
-            ):
-
-        self.df = data_file
-        self.image_dir = image_dir
-        self.crop_size = crop_size
-        self.num_crops = num_crops
-        self.transform = transform
-
-        if outcome_type == 'survival':
-            self.outcomes = self.df[['time', 'status']].to_numpy().astype(float)
-        else:
-            self.outcomes = self.df[[outcome]].to_numpy().astype(float)
-        self.ids = self.df['id_patient'].tolist()
-        self.files = self.df['file'].tolist()
-
-        try:
-            self.random_seeds = self.df['random_id'].tolist()
-        except:
-            self.random_seeds = np.ones(self.df.shape[0])
-
-    def __len__(self):
-        return self.df.shape[0]
-
-    def sample_patch(self, idx):
-        idx = idx % self.df.shape[0]
-        fname = self.files[idx]
-        random_seed = self.random_seeds[idx]
-
-        img_name = os.path.join(self.image_dir, fname)
-        imgs = np.array(Image.open(img_name))
-        imgs = random_crops(imgs, self.crop_size, self.num_crops).reshape(-1, self.crop_size, 3)
-        if self.transform is None:
-            pass
-        else:
-            random.seed(random_seed)
-            torch.manual_seed(random_seed)
-            imgs = self.transform(torch.tensor(imgs).permute(2,0,1)/255.)
-        sample = (
-            imgs, 
-            self.ids[idx], 
-            # random_seed, 
-            self.outcomes[idx,:]
-            )
-        return sample
-
-    def __getitem__(self, idx):
-        if torch.is_tensor(idx):
-            idx = idx.tolist()
-        return self.sample_patch(idx)
-
-
-def batchsplit(img, nrows, ncols):
-    return np.concatenate(
-        np.split(
-            np.stack(
-                np.split(img, nrows, axis=0)
-            ), ncols, axis=2)
-    )
-
-
-def random_crop(img, height, width):
-    x = random.randint(0, img.shape[1] - width)
-    y = random.randint(0, img.shape[0] - height)
-    img = img[y:y + height, x:x + width]
-    return img
-
-
-def random_crops(img, crop_size, n_crops):
-    h, w, c = img.shape
-    if (h == crop_size) and (w == crop_size):
-        return img
-    nrows = h // crop_size
-    ncols = w // crop_size
-    if max(nrows % crop_size, ncols % crop_size):
-        img = random_crop(img, nrows * crop_size, ncols * crop_size)
-    splits = batchsplit(img, nrows, ncols)
-    return splits[random.sample(range(splits.shape[0]), n_crops)]
 
 
 ###########################################
@@ -544,6 +280,7 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
 
     elif outcome_type == 'classification':
         f1 = f1_score(targets, preds.argmax(axis=1), average='weighted')
+        acc = accuracy_score(targets, preds.argmax(axis=1))
         try:
             if preds.shape[1] > 2:
                 # multi-class
@@ -557,7 +294,8 @@ def calculate_metrics(preds, targets, outcome_type='survival'):
             auc = 0.5
         res = {
             'f1': f1,
-            'auc': auc
+            'auc': auc,
+            'accuracy': acc
         }
 
 
@@ -576,7 +314,7 @@ class ModelEvaluation(object):
         outcome_type='survival',
         loss_function=None,
         mode='train',
-        variables=['ids', 'preds', 'targets'],
+        variables=['preds', 'targets', 'id'],
         device=torch.device('cpu'),
         timestr=None
     ):
@@ -590,16 +328,22 @@ class ModelEvaluation(object):
         self.reset()
 
     def reset(self):
-        self.data = {}
+        self.data = dict()
         for var in self.variables:
             self.data[var] = None
 
     def update(self, batch):
         for k, v in batch.items():
-            if self.data[k] is None:
-                self.data[k] = v.data.cpu().numpy()
+            if isinstance(v, tuple):
+                if self.data[k] is None:
+                    self.data[k] = list()
+                self.data[k] += list(v)
             else:
-                self.data[k] = np.concatenate([self.data[k], v.data.cpu().numpy()])
+                # Tensor objects
+                if self.data[k] is None:
+                    self.data[k] = v.data.cpu().numpy()
+                else:
+                    self.data[k] = np.concatenate([self.data[k], v.data.cpu().numpy()])
 
     def evaluate(self):
         metrics = calculate_metrics(
@@ -607,7 +351,7 @@ class ModelEvaluation(object):
             self.data['targets'],
             outcome_type=self.outcome_type)
 
-        loss_epoch = self.criterion.calculate(
+        loss_epoch = self.criterion.calculate(  #FIXME
             torch.tensor(self.data['preds']).to(self.device),
             torch.tensor(self.data['targets']).to(self.device))
 
@@ -619,7 +363,10 @@ class ModelEvaluation(object):
         values = []
         for k,v in self.data.items():
             values.append(v)
-        df = pd.DataFrame(np.concatenate(values, 1))
+        df = pd.concat(objs=[
+                pd.DataFrame(values[0]),
+                pd.DataFrame(values[1]),
+                pd.DataFrame(values[2])], axis=1)
         df.to_csv(filename)
 
 

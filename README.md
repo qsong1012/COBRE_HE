@@ -1,4 +1,4 @@
-# Whole Slide Image based Patient Level Prediction (WSI-PLP)
+# POPPSlide: Patient Outcome Prediction Pipeline using Whole Slide Images
 This repository contains the complete pipeline to predict patient outcome (categorical, time to event, or continuous) using whole slide images (WSIs). The method is described in detail in https://www.medrxiv.org/content/10.1101/2021.01.21.21250241v1 . 
 ![Model Structure](figure/model-structure.png)
 
