@@ -1,3 +1,7 @@
+# Installation
+* Install the required packages following requirements in `requirement.sh`
+* Install this package:
+`pip install -e .`
 # Prepare the datasets to be used for this repo: see WSI_PreProcess
 The following items should be presented in this repo:
 * data folder: contains the preprocessed feature vectors
@@ -41,27 +45,38 @@ The following items should be presented in this repo:
 
 ## sample svs from patients
 * `--repeats-per-epoch`: how many times to select one patient during each epoch
-* `--num-val`: how many times to select one patient during each epoch for evaluation
+* `--svs-per-patient`: how many times to select one patient during each epoch for evaluation
 
 ## sample regions from whole slide
 * `--magnification`: magnification level
-* `--tile-size`: size of tile (i.e., region) under specified magnification level
+* `--region-size`: size of tile (i.e., region) under specified magnification level
 * `--sampling-threshold`: minimum number of patches within the region for this region to be eligible for sampling
-* `--repeats-per-svs`: number of regions to select from one svs
+* `--regions-per-svs`: number of regions to select from one svs
 
 ## sample patches from region
 * `--num-patches`: number of patches to sample from each region
 * `--sample-all`: sample all patches from each region
+
+## Determine overlap between regions
+* `--grid-size`: specify the grid size when sampling regions from WSI. For example, for a region containing LxL patches, 
+    - grid size = 1: sample regions with max overlap
+    - grid size = L/2: sample regions with 50% overlap
+    - grid size = L: no overlap
+* Determine number of regions to sample from the WSI:
+    - `python utils/get_region_info.py --meta-svs=meta/tcga_brca_svs.pickle --grid-size=10`
+    - From the output, determine a reasonable number of regions to sample from each WSI. For example, we can use 64 regions if the majority of WSIs contain less than 64 regions.
+* Specify the grid size and number of regions in model training. To save computational memory, specify the number of patches to sample from each region and do not use `--sample-all`
+    - `--grid-size=10 --regions-per-svs=64 --num-patches=100`
 
 # Fine-tune for downstream tasks
 
 ## Example commands:
 
 Single fold finetuning:
-`python train.py --study=colon --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --use-features --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 --num-val=4 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy --fold=0 --timestr=20230120_120000`
+`python train.py --study=colon --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy --fold=0 --timestr=20230120_120000`
 
 5-fold cross-validation:
-`python cross_validation.py colon 20230120_120000 --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --use-features --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 --num-val=4 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy`
+`python cross_validation.py colon 20230120_120000 --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy`
 
 Summary model performance:
 `python utils/collect_predictions.py colon 20230120_120000`

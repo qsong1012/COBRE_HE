@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from .info_nce_loss import info_nce
+from einops import rearrange
+import torch.nn.functional as F
 
 ###########################################
 #             ContrasiveLoss              #
@@ -33,13 +35,14 @@ class LossSeqCompInfonceL2(nn.Module):
     '''
     additional part to predict if a patch is background
     '''
+
     def __init__(self, args=None):
         super().__init__()
         self.args = args
         # self.norm_seq = nn.LayerNorm(args.hidden_dim)
         self.l2 = nn.PairwiseDistance(p=2)
-        self.is_background = nn.Linear(args.hidden_dim, 2)
-        self.ce = nn.CrossEntropyLoss()
+        # self.is_background = nn.Linear(args.hidden_dim, 2)
+        # self.ce = nn.CrossEntropyLoss()
 
     def forward(self, outputs):
         enc_seq = outputs['enc_seq']
@@ -51,21 +54,21 @@ class LossSeqCompInfonceL2(nn.Module):
 
         # ###############
         # the info-nce loss for the sequence encoding
-        attn_loss_seq_1 = info_nce(
-            query=enc_seq[sel], 
-            positive_key=org_seq[sel], 
-            temperature=0.1, 
-            reduction='mean', 
-            negative_mode='paired',
-            to_normalize=False,
-            dist = 'l2')
+        attn_loss_seq_1 = info_nce(query=enc_seq[sel],
+                                   positive_key=org_seq[sel],
+                                   temperature=0.1,
+                                   reduction='mean',
+                                   negative_mode='paired',
+                                   to_normalize=False,
+                                   dist='l2')
 
-        attn_loss_seq_2 = self.l2(enc_seq[sel], org_seq[sel])
+        attn_loss_seq_2 = self.l2(enc_seq[sel], org_seq[sel]).mean()
 
-        is_background = self.is_background(enc_seq)
-        ce_loss = self.ce(is_background[masks>0], zeros.long()[masks>0])
+        # is_background = self.is_background(enc_seq)
+        # ce_loss = self.ce(is_background[masks>0], zeros.long()[masks>0])
 
-        return attn_loss_seq_1 + attn_loss_seq_2*2, ce_loss
+        return attn_loss_seq_1, attn_loss_seq_2 * 2
+
 
 class LossNull(nn.Module):
 
@@ -77,7 +80,10 @@ class LossNull(nn.Module):
         return torch.tensor(0.).to(device), torch.tensor(0.).to(device)
 
 
-dict_loss = {'compseqil2': LossSeqCompInfonceL2, "null": LossNull}
+dict_loss = {
+    'compseqil2': LossSeqCompInfonceL2,
+    "null": LossNull,
+}
 
 ###########################################
 #             Survival Loss               #

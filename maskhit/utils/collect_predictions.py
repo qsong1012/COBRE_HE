@@ -7,12 +7,15 @@ study = sys.argv[1]
 timestr = sys.argv[2]
 files = glob.glob(f'logs/{study}/{timestr}*.csv')
 files.sort()
-files = [x for x in files if re.match('.*-test.*-.*', x)]
+files = [x for x in files if re.match(f'.*{timestr}-.*', x)]
 
 res = []
 for fold, fname in enumerate(files):
     print(fname)
-    res_i = pd.read_csv(fname)
+    try:
+        res_i = pd.read_csv(fname)
+    except:
+        break
     res_i['fold'] = fold
     res.append(res_i)
 

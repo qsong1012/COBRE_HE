@@ -79,10 +79,14 @@ class TrainOptions(BaseOptions):
                                  type=int,
                                  default=224,
                                  help='size of patch')
-        self.parser.add_argument('--use-features',
+        self.parser.add_argument('--use-patches',
                                  action='store_true',
                                  default=False,
-                                 help='use extracted features')
+                                 help='use patches instead of features')
+        self.parser.add_argument('--backbone',
+                                 type=str,
+                                 default='resnet_18',
+                                 help='backbone for patch feature extraction')
         self.parser.add_argument('--ffpe-only',
                                  action='store_true',
                                  default=False,
@@ -91,10 +95,14 @@ class TrainOptions(BaseOptions):
                                  action='store_true',
                                  default=False,
                                  help='exclude ffpe slides')
-        self.parser.add_argument('--num-svs',
+        self.parser.add_argument('--regions-per-svs',
                                  type=int,
                                  default=1,
                                  help='number of svs sampled in sample-patient mode')
+        self.parser.add_argument('--data',
+                                 type=str,
+                                 default='data',
+                                 help='location of data root folder')
 
         # outcome infomation
         self.parser.add_argument('--outcome',
@@ -112,13 +120,15 @@ class TrainOptions(BaseOptions):
                                  help="HASN'T TESTED: whether to use a weighted loss function for imbalanced classification")
 
         # sample selection
-        self.parser.add_argument('--tile-size',
+        self.parser.add_argument('--region-size',
                                  type=int,
                                  default=4480,
-                                 help='size of tile region sampled from svs, if none then sample from entire svs')
+                                 help='size of tile region sampled from svs, \
+                                     if none then sample from entire svs. \
+                                     Unit: pixels')
         self.parser.add_argument('--num-patches',
                                  type=int,
-                                 default=400,
+                                 default=-1,
                                  help='number of patches to select from one patient during one iteration')
         self.parser.add_argument('--sample-all',
                                  action='store_true',
@@ -134,14 +144,14 @@ class TrainOptions(BaseOptions):
                                  default=0,
                                  help=
                                  'number of patches to select from one patient during one iteration at validation time')
-        self.parser.add_argument('--repeats-per-svs',
+        self.parser.add_argument('--svs-per-patient',
                                  type=int,
-                                 default=4,
-                                 help='how many times to select one svs during each iteration')
+                                 default=1,
+                                 help='how many svs to select from one sample during each iteration')
         self.parser.add_argument('--repeats-per-epoch',
                                  type=int,
                                  default=4,
-                                 help='how many times to select one patient during each epoch')
+                                 help='how many times to select one sample during each epoch')
         self.parser.add_argument('--sample-patient',
                                  action='store_true',
                                  default=False,
@@ -150,6 +160,12 @@ class TrainOptions(BaseOptions):
                                  action='store_true',
                                  default=False,
                                  help='sample by svs')
+        self.parser.add_argument('--grid-size',
+                                 type=int,
+                                 default=10,
+                                 help='grid size for sampling regions from whole slide. Unit: patches')
+
+
 
         # vit model specific parameters
         self.parser.add_argument('--avg-cls',
@@ -325,10 +341,10 @@ class TrainOptions(BaseOptions):
         self.parser.add_argument('--mlm-loss',
                                  type=str,
                                  default='null',
-                                 help='cluster: only for sequence '
-                                 'infonce: compare with memory '
-                                 'infonce2: compare with self '
-                                 'crossentropy: only for sequence')
+                                 help='''cluster: only for sequence
+                                 infonce: compare with memory
+                                 infonce2: compare with self
+                                 crossentropy: only for sequence''')
         self.parser.add_argument('--no-cls-loss',
                                  action='store_true',
                                  default=False,

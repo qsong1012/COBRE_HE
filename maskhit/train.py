@@ -4,12 +4,9 @@ import pandas as pd
 import sys
 import glob
 import socket
-from model.fitter import HybridFitter
-from model.losses import FlexLoss
+from maskhit.trainer.fitter import HybridFitter
+from maskhit.trainer.losses import FlexLoss
 from options.train_options import TrainOptions
-
-
-
 
 opt = TrainOptions()
 opt.initialize()
@@ -28,17 +25,18 @@ if args.lr is not None:
 if args.num_patches_val == 0:
     args.num_patches_val = args.num_patches
 
-args.repeats_per_epoch = args.repeats_per_epoch // args.repeats_per_svs
 if args.resume_train:
     args.warmup_epochs = 0
 
-if args.tile_size is not None:
-    args.tile_margin = args.tile_size // args.patch_size
+if args.region_size is not None:
+    args.tile_margin = args.region_size // args.patch_size
 else:
     args.tile_margin = None
-# if args.sample_all:
-#     args.num_patches = args.tile_margin * args.tile_margin
-args.tiles_per_sample = args.num_svs
+
+if args.tile_margin is not None:
+    assert_message = "grid size is measured in patches and need to be a positive number no larger than the region size / patch size"
+    assert args.grid_size <= args.tile_margin and args.grid_size > 0, assert_message
+
 args.prop_mask = [int(x) for x in args.prop_mask.split(',')]
 args.prop_mask = [x / sum(args.prop_mask) for x in args.prop_mask]
 
@@ -49,10 +47,63 @@ if args.preset == 'test':
     args.num_val = 10
     args.batch_size = 10
 
-assert args.batch_size >= args.num_val, "batch_size should be >= num_val"
+if args.sample_svs:
+    args.id_var = 'id_svs_num'
+else:
+    args.id_var = 'id_patient_num'
+
+if args.outcome_type == 'survival':
+    args.outcomes = ['time', 'status']
+else:
+    args.outcomes = [args.outcome]
+
+args.patch_spec = f"mag_{args.magnification}-size_{args.patch_size}"
+
+args.margin = int(args.region_size //
+                  args.patch_size) if args.region_size is not None else None
 
 
-args.offset = f"{args.vis_layer}-{args.vis_head}"
+if args.num_patches > 0:
+    args.sample_all = False
+args.mode_ops = {
+    'train': {},
+    'val': {},
+    'predict': {}
+}
+
+args.mode_ops['train']['num_patches'] = args.num_patches
+args.mode_ops['val']['num_patches'] = args.num_patches_val
+args.mode_ops['predict']['num_patches'] = args.num_patches_val
+
+args.mode_ops['train']['num_tiles'] = args.regions_per_svs
+if not args.outcome_type == 'mlm' and not args.sample_all:
+    args.mode_ops['val']['num_tiles'] = 64
+else:
+    args.mode_ops['val']['num_tiles'] = args.regions_per_svs
+args.mode_ops['predict']['num_tiles'] = args.regions_per_svs
+
+
+args.mode_ops['train']['svs_per_patient'] = args.svs_per_patient
+args.mode_ops['val']['svs_per_patient'] = args.svs_per_patient
+args.mode_ops['predict']['svs_per_patient'] = args.svs_per_patient
+
+args.mode_ops['train']['regions_per_patient'] = args.regions_per_svs * args.svs_per_patient
+args.mode_ops['val']['regions_per_patient'] = args.mode_ops['val']['num_tiles'] * args.svs_per_patient
+args.mode_ops['predict']['regions_per_patient'] = args.regions_per_svs * args.svs_per_patient
+
+args.mode_ops['train']['repeats_per_epoch'] = args.repeats_per_epoch
+args.mode_ops['val']['repeats_per_epoch'] = 1
+args.mode_ops['predict']['repeats_per_epoch'] = args.repeats_per_epoch
+
+
+args.mode_ops['train']['batch_size'] = max(args.batch_size, args.svs_per_patient)
+args.mode_ops['val']['batch_size'] = max(args.batch_size, args.svs_per_patient)
+args.mode_ops['predict']['batch_size'] = max(args.batch_size, args.svs_per_patient)
+
+
+if args.visualization:
+    args.vis_spec = f"{args.timestr}-{args.resume}/{args.vis_layer}-{args.vis_head}"
+
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -235,16 +286,16 @@ def main():
 
     # Simply call main_worker function
     if args.mode == 'test':
-        hf.fit(args.gpu, data_dict, 'test')
+        hf.fit(data_dict, 'test')
 
     elif args.mode == 'train':
-        hf.fit(args.gpu, data_dict)
+        hf.fit(data_dict)
 
     elif args.mode == 'predict':
         hf.predict(df_test)
 
     elif args.mode == 'extract':
-        hf.fit(args.gpu, data_dict, procedure='extract')
+        hf.fit(data_dict, procedure='extract')
 
 
 if __name__ == '__main__':

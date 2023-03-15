@@ -8,58 +8,22 @@ from torch.optim import lr_scheduler
 from collections import OrderedDict
 from einops import rearrange
 import tqdm
-
-from .helper import *
-from .models import HybridModel
+from torch.utils.data import DataLoader
 from warmup_scheduler import GradualWarmupScheduler
 # pip install git+https://github.com/ildoonet/pytorch-gradual-warmup-lr.git
 import shutil
-import logging
 import math
-from .losses import ContrasiveLoss
 import pickle
+import numpy as np
 
-
-def setup_logger(name, log_file, file_mode, to_console=False, override=False):
-    """
-            https://stackoverflow.com/questions/11232230/logging-to-two-files-with-different-settings
-        To setup as many loggers as you want
-    """
-
-    formatter = logging.Formatter('%(message)s')
-    os.makedirs(os.path.dirname(log_file), exist_ok=True)
-    if override:
-        pass
-    elif os.path.isfile(log_file) and file_mode == 'w':
-        raise Exception('log file already exists! Use --override-logs to ignore. %s' % (log_file, ))
-    handler = logging.FileHandler(log_file, mode=file_mode)
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger(name)
-    logger.setLevel(logging.INFO)
-    logger.addHandler(handler)
-
-    if to_console:
-        logger.addHandler(logging.StreamHandler())
-
-    return logger
-
-
-def compose_logging(file_mode, model_name, to_console=False, override=False):
-    writer = {}
-    writer["meta"] = setup_logger("meta",
-                                  os.path.join("logs",
-                                               "%s_meta.log" % model_name),
-                                  file_mode,
-                                  to_console=to_console,
-                                  override=override)
-    writer["data"] = setup_logger("data",
-                                  os.path.join("logs",
-                                               "%s_data.csv" % model_name),
-                                  file_mode,
-                                  to_console=to_console,
-                                  override=override)
-    return writer
+from maskhit.model.models import HybridModel
+from maskhit.trainer.losses import ContrasiveLoss
+from maskhit.trainer.slidedataset import SlidesDataset
+from maskhit.trainer.transforms import get_data_transforms
+from maskhit.trainer.meters import AverageMeter, ProgressMeter
+from maskhit.trainer.metrics import ModelEvaluation, calculate_metrics
+from maskhit.trainer.logger import compose_logging
+from maskhit.trainer.earlystopping import EarlyStopping
 
 
 def format_results(res):
@@ -74,58 +38,34 @@ def format_results(res):
     return line
 
 
-def reshape_img_batch(img_batch, crop_size, use_features):
-    if use_features:
-        return img_batch.float()
-    else:
-        b = img_batch.size(0)
-    return img_batch.\
-        view(img_batch.size(0), 3, -1, crop_size, crop_size).\
-        permute(0, 2, 1, 3, 4).\
-        contiguous().\
-        view(b, -1, 3, crop_size, crop_size)
-
-
-def unpack_sample(sample, device):
-    imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid = list(
-        map(lambda x: sample[x], [0, 1, 2, 3, 4, 5, 6, 7]))
-    imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid = \
+def unpack_sample(sample, regions_per_patient, svs_per_patient, device):
+    imgs, ids, targets, pos, pos_tile, tiles, pct_valid = list(
+        map(lambda x: sample[x], [0, 1, 2, 3, 4, 5, 6]))
+    imgs, ids, targets, pos, pos_tile, tiles, pct_valid = \
         imgs.to(device, non_blocking=True), \
         ids.to(device, non_blocking=True), \
         targets.to(device, non_blocking=True), \
         pos.to(device, non_blocking=True), \
         pos_tile.to(device, non_blocking=True), \
         tiles.to(device, non_blocking=True), \
-        clusters.to(device, non_blocking=True), \
         pct_valid.to(device, non_blocking=True)
 
-    return imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid
+    targets = rearrange(targets, '(b n) d -> b n d', n=svs_per_patient)
+    targets = targets[:, 0, :]
+    ids_of_sample = rearrange(ids, '(b n) -> b n', n=svs_per_patient)[:, 0]
 
-
-def sample_wsi(df):
-    df_id = df.drop_duplicates('id_svs')[['id_patient', 'id_svs']]
-    df_id = df_id.groupby('id_patient').sample(1).reset_index(drop=True)
-    return df.merge(df_id[['id_svs']], on='id_svs', how='inner')
-
-
-# helper functions
-class _CustomDistributedDataParallel(nn.Module):
-    '''
-    https://stackoverflow.com/a/56225540
-    '''
-
-    def __init__(self, model, device_ids):
-        super(_CustomDistributedDataParallel, self).__init__()
-        self.model = nn.parallel.DistributedDataParallel(model, device_ids)
-
-    def forward(self, *input):
-        return self.model(*input)
-
-    def __getattr__(self, name):
-        try:
-            return super().__getattr__(name)
-        except AttributeError:
-            return getattr(self.model.module, name)
+    sample = {
+        "imgs": imgs,
+        "ids": ids,
+        "targets": targets,
+        "pos": pos,
+        "pos_tile": pos_tile,
+        "tiles": tiles,
+        "pct_valid": pct_valid,
+        "regions_per_patient": regions_per_patient,
+        "ids_of_sample": ids_of_sample.view(-1, 1)
+    }
+    return sample
 
 
 # helper functions
@@ -164,18 +104,6 @@ def get_wd_params(model: nn.Module):
     return decay, no_decay
 
 
-class NullWriter:
-
-    def __init__(self):
-        pass
-
-    def info(self, meesage):
-        pass
-
-
-scaler = torch.cuda.amp.GradScaler()
-
-
 class HybridFitter:
 
     def __init__(
@@ -197,7 +125,7 @@ class HybridFitter:
         self.timestr = timestr
         self.meta_ds = {}
         self.model_name = model_name
-        self.best_metric = -100 if args.outcome_type == 'mlm' else 0
+        self.best_metric = -1e4 if args.outcome_type == 'mlm' else 0
         self.checkpoints_folder = checkpoints_folder
         self.checkpoint_to_resume = checkpoint_to_resume
         self.num_classes = num_classes
@@ -210,22 +138,10 @@ class HybridFitter:
 
         ckp = torch.load(
             self.checkpoint_to_resume,
-            map_location='cuda:{}'.format(0 if self.gpu is None else self.gpu))
+            map_location='cuda:0')
         self.writer['meta'].info("Loading model checkpoints ... Epoch is %s" %
                                  ckp['epoch'])
         self.epoch = ckp['epoch']
-
-        try:
-            del ckp['state_dict_model']['attn.loss_fn.enc_train']
-            del ckp['state_dict_model']['attn.loss_fn.enc_val']
-        except:
-            pass
-
-        try:
-            del ckp['state_dict_model']['model.module.attn.loss_fn.enc_train']
-            del ckp['state_dict_model']['model.module.attn.loss_fn.enc_val']
-        except:
-            pass
 
         if self.args.mode == 'train' and not self.args.resume_train:
             try:
@@ -268,72 +184,62 @@ class HybridFitter:
                     scheduler_ckp = ckp['state_dict_scheduler']
                 self.scheduler.load_state_dict(scheduler_ckp)
 
-    def prepare_datasets(self, pickle_file, mode='train', batch_size=256):
-        self.batch_size = batch_size
+    def prepare_datasets(self, pickle_file, mode='train'):
         if isinstance(pickle_file, str):
             _df = pd.read_pickle(pickle_file)
         else:
             _df = pickle_file
 
-        if self.args.visualization:
+        repeats_per_epoch = self.args.mode_ops[mode]['repeats_per_epoch']
+        svs_per_patient = self.args.mode_ops[mode]['svs_per_patient']
+
+        if mode != 'train' and self.args.outcome_type != 'mlm':
             self.meta_df[mode] = _df
 
         elif self.args.sample_patient or self.args.sample_svs:
-            n_repeats = 1 if mode == 'val' else self.args.repeats_per_epoch
             res = []
             group_var = 'id_svs' if self.args.sample_svs else 'id_patient'
-            for r_i in range(n_repeats):
+            for r_i in range(repeats_per_epoch):
                 # random sample n svs for each patient during each iteration
                 # shuffle by group
                 _dfi = _df.groupby(group_var, as_index=False).sample(
-                    self.args.num_svs,
+                    svs_per_patient,
                     weights=_df.sampling_weights,
                     replace=True).reset_index(drop=True)
                 _dfi['repeat'] = r_i
-                _dfi['group'] = _dfi.index // self.args.num_svs
+                _dfi['group'] = _dfi.index // svs_per_patient
                 grps = _dfi['group'].unique()
                 np.random.shuffle(grps)
                 _dfg = pd.DataFrame(grps, columns=['group'])
                 res.append(_dfg.merge(_dfi, on='group'))
             self.meta_df[mode] = pd.concat(res).reset_index(drop=True)
 
-            if mode == 'predict':
-                self.meta_df[mode] = self.meta_df[mode].sort_values(
-                    group_var).reset_index(drop=True)
-                if self.args.visualization:
-                    self.meta_df[mode] = self.meta_df[mode].iloc[:20]
         else:
-            n_repeats = self.args.num_val if mode == 'val' else self.args.repeats_per_epoch
-            self.meta_df[mode] = _df.loc[_df.index.repeat(n_repeats)].sample(
-                frac=1.0).reset_index(drop=True)
+            self.meta_df[mode] = _df.loc[_df.index.repeat(
+                repeats_per_epoch)].sample(frac=1.0).reset_index(drop=True)
 
-    def get_datasets(
-        self,
-        pickle_file,
-        mode='train',
-        epoch=1,
-        batch_size=1
-    ):
+        if mode == 'predict':
+            self.meta_df[mode] = self.meta_df[mode].sort_values(
+                group_var).reset_index(drop=True)
+
+    def get_datasets(self, pickle_file, mode='train'):
         transform = get_data_transforms()[mode]
         ds = SlidesDataset(data_file=pickle_file,
-                           outcome=self.args.outcome,
+                           outcomes=self.args.outcomes,
                            writer=self.writer,
                            mode=mode,
                            args=self.args,
-                           n_tiles=self.args.repeats_per_svs *
-                           (1 if mode == 'train' else self.args.num_val),
+                           margin=self.args.margin,
+                           num_patches=self.args.mode_ops[mode]['num_patches'],
+                           n_tiles=self.args.mode_ops[mode]['num_tiles'],
                            transforms=transform)
 
-        train_sampler = None
-
-        dl = torch.utils.data.DataLoader(
-            ds,
-            shuffle=False,
-            batch_size=batch_size,
-            num_workers=self.args.num_workers,
-            # pin_memory=True,
-            drop_last=False,
-            sampler=train_sampler)
+        dl = DataLoader(ds,
+                        shuffle=False,
+                        batch_size=self.args.mode_ops[mode]['batch_size'],
+                        num_workers=self.args.num_workers,
+                        drop_last=False,
+                        sampler=None)
         self.dataloaders[mode] = dl
 
     def reset_optimizer(self):
@@ -402,14 +308,11 @@ class HybridFitter:
                 after_scheduler=base_scheduler)
 
     def train(self, df_train=None, epoch=0):
-        tiles_per_sample = self.args.num_svs
+        regions_per_patient = self.args.mode_ops['train']['regions_per_patient']
+        svs_per_patient = self.args.mode_ops['train']['svs_per_patient']
         # print("Preparing training data ...")
-        self.prepare_datasets(df_train,
-                              'train',
-                              batch_size=self.args.batch_size *
-                              self.args.num_patches)
-
-        self.get_datasets(self.meta_df['train'], mode='train', epoch=1, batch_size=self.args.batch_size)
+        self.prepare_datasets(df_train, 'train')
+        self.get_datasets(self.meta_df['train'], mode='train')
 
         self.writer['meta'].info('Training from step %s' % epoch)
         # training phase
@@ -424,12 +327,16 @@ class HybridFitter:
         losses1 = AverageMeter('Loss 1', ':6.3f')
         losses2 = AverageMeter('Loss 2', ':6.3f')
 
-        progress = ProgressMeter(
-            len(self.dataloaders['train']),
-            [batch_time, data_time, losses1, losses2, losses0, perfs],
-            prefix="Epoch: [{}]".format(epoch),
-            writer=self.writer['meta'],
-            verbose=True)
+        if self.args.outcome_type == 'mlm':
+            tracked_items = [batch_time, data_time, losses1, losses2, losses0]
+        else:
+            tracked_items = [batch_time, data_time, losses0, perfs]
+
+        progress = ProgressMeter(len(self.dataloaders['train']),
+                                 tracked_items,
+                                 prefix="Epoch: [{}]".format(epoch),
+                                 writer=self.writer['meta'],
+                                 verbose=True)
         end = time.time()
 
         eval_t = ModelEvaluation(outcome_type=self.args.outcome_type,
@@ -438,33 +345,15 @@ class HybridFitter:
                                  device=self.device,
                                  timestr=self.timestr)
 
-        for group in self.optimizer.param_groups:
-            current_lr = group['lr']
-            # self.writer['meta'].info("Learning rate is %s" % (current_lr))
         self.writer['meta'].info('-' * 30)
 
         # print("Start training loop ...")
         # train over all training data
         for i, sample in enumerate(self.dataloaders['train']):
-            imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid = unpack_sample(
-                sample, self.device)
-            targets = rearrange(targets,
-                                '(b n) d -> b n d',
-                                n=tiles_per_sample)[:, 0, :]
-
-            inputs = {
-                'x': imgs,
-                'ids': ids,
-                'pos': pos,
-                'pos_tile': pos_tile,
-                'tiles': tiles,
-                'clusters': clusters,
-                'pct_valid': pct_valid,
-                'n_tiles': self.args.repeats_per_svs
-            }
-
+            batch_inputs = unpack_sample(sample, regions_per_patient, svs_per_patient, self.device)
+            targets = batch_inputs['targets']
             if self.args.outcome_type == 'survival':
-                if targets[:, 1].sum() == 0:
+                if batch_inputs['targets'][:, 1].sum() == 0:
                     continue
 
             data_time.update(time.time() - end)
@@ -472,21 +361,16 @@ class HybridFitter:
             # forward and backprop
             self.optimizer.zero_grad()
             with torch.set_grad_enabled(True):
-                outputs = self.model(inputs)
+                outputs = self.model(batch_inputs)
                 preds = outputs['out']
                 attn_loss_seq, attn_loss_cls = self.loss_fn(outputs)
                 loss = self.criterion.calculate(outputs['out'], targets)
-                attn_loss_seq = attn_loss_seq.mean()
-                attn_loss_cls = attn_loss_cls.mean()
                 loss += attn_loss_seq
                 loss += attn_loss_cls
                 if torch.isnan(loss):
                     print('null loss', attn_loss_cls, attn_loss_seq)
                     continue
 
-            ids = rearrange(ids, '(b n) -> b n',
-                            n=tiles_per_sample)[:, 0]
-            nbatches = imgs.size(0) // tiles_per_sample
             loss.backward()
             self.optimizer.step()
 
@@ -494,25 +378,26 @@ class HybridFitter:
                 pass
             else:
                 eval_t.update({
-                    "ids": ids.view(-1, 1),
+                    "ids": batch_inputs['ids_of_sample'],
                     "preds": preds,
                     "targets": targets
                 })
 
             # update metrics
-            losses1.update(attn_loss_seq.item(), nbatches)
-            losses2.update(attn_loss_cls.item(), nbatches)
-            losses0.update(loss.item(), nbatches)
+            num_samples = 1
+            losses1.update(attn_loss_seq.item(), num_samples)
+            losses2.update(attn_loss_cls.item(), num_samples)
+            losses0.update(loss.item(), num_samples)
 
             if self.args.outcome_type == 'mlm':
                 metrics = {'loss': 0}
             else:
                 metrics = calculate_metrics(
-                    ids=ids.view(nbatches, -1).cpu().numpy(),
+                    ids=batch_inputs['ids_of_sample'].cpu().numpy(),
                     preds=preds.data.cpu().numpy(),
                     targets=targets.data.cpu().numpy(),
                     outcome_type=self.args.outcome_type)
-            perfs.update(metrics[self.metric], nbatches)
+            perfs.update(metrics[self.metric], num_samples)
 
             # measure elapsed time
             batch_time.update(time.time() - end)
@@ -534,10 +419,11 @@ class HybridFitter:
         return res
 
     def evaluate(self, df_val, epoch=0):
-        tiles_per_sample = self.args.num_svs
-        # print("Preparing val data ...")
-        self.prepare_datasets(df_val, 'val', batch_size=self.args.batch_size)
-        self.get_datasets(self.meta_df['val'], 'val', batch_size=self.args.batch_size // self.args.num_val)
+        regions_per_patient = self.args.mode_ops['val']['regions_per_patient']
+        svs_per_patient = self.args.mode_ops['val']['svs_per_patient']
+
+        self.prepare_datasets(df_val, 'val')
+        self.get_datasets(self.meta_df['val'], 'val')
 
         # validation phase
         self.model.eval()
@@ -557,45 +443,25 @@ class HybridFitter:
         counts = 0
         # print("Start val loop ...")
         for i, sample in enumerate(tqdm.tqdm(self.dataloaders['val'])):
-            imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid = unpack_sample(
-                sample, self.device)
-            inputs = {
-                'x': imgs,
-                'ids': ids,
-                'pos': pos,
-                'pos_tile': pos_tile,
-                'tiles': tiles,
-                'clusters': clusters,
-                'pct_valid': pct_valid,
-                'n_tiles': self.args.repeats_per_svs * self.args.num_val
-            }
-
-            targets = rearrange(targets,
-                                '(b n) d -> b n d',
-                                n=tiles_per_sample)[:, 0, :]
+            batch_inputs = unpack_sample(sample, regions_per_patient, svs_per_patient, self.device)
             # forward
             with torch.set_grad_enabled(False):
-                outputs = self.model(inputs)
+                outputs = self.model(batch_inputs)
                 preds = outputs['out']
                 attn_loss_seq, attn_loss_cls = self.loss_fn(outputs)
-                attn_loss_seq = attn_loss_seq.mean()
-                attn_loss_cls = attn_loss_cls.mean()
-
-            ids = rearrange(ids, '(b n) -> b n',
-                            n=tiles_per_sample)[:, 0]
-            nbatches = imgs.size(0) // tiles_per_sample
 
             if self.args.outcome_type == 'mlm':
                 counts += 1
-                loss = self.criterion.calculate(outputs['out'], targets)
+                loss = self.criterion.calculate(outputs['out'],
+                                                batch_inputs['targets'])
                 losses0 += (attn_loss_seq + attn_loss_cls + loss).item()
                 losses1 += attn_loss_seq.mean().item()
                 losses2 += attn_loss_cls.mean().item()
             else:
                 eval_v.update({
-                    "ids": ids.view(-1, 1),
+                    "ids": batch_inputs['ids'].view(-1, 1),
                     "preds": preds,
-                    "targets": targets
+                    "targets": batch_inputs['targets']
                 })
 
         if self.args.outcome_type == 'mlm':
@@ -663,12 +529,9 @@ class HybridFitter:
         return 0
 
     def extract_features(self, df_val, epoch=0):
-        tiles_per_sample = self.args.num_svs
         # print("Preparing val data ...")
-        self.prepare_datasets(df_val,
-                              'predict',
-                              batch_size=self.args.batch_size // self.args.num_val)
-        self.get_datasets(self.meta_df['predict'], 'predict', batch_size=self.args.batch_size // self.args.num_val)
+        self.prepare_datasets(df_val, 'predict')
+        self.get_datasets(self.meta_df['predict'], 'predict')
 
         # validation phase
         self.model.eval()
@@ -678,35 +541,21 @@ class HybridFitter:
         counts = 0
         # print("Start extraction loop ...")
         for i, sample in enumerate(tqdm.tqdm(self.dataloaders['predict'])):
-            imgs, ids, targets, pos, pos_tile, tiles, clusters, pct_valid = unpack_sample(
-                sample, self.device)
-            inputs = {
-                'x': imgs,
-                'ids': ids,
-                'pos': pos,
-                'pos_tile': pos_tile,
-                'tiles': tiles,
-                'clusters': clusters,
-                'pct_valid': pct_valid,
-                'n_tiles': self.args.repeats_per_svs * self.args.num_val
-            }
+            batch_inputs = unpack_sample(sample, 1, self.device)
 
             # forward
             with torch.set_grad_enabled(False):
                 outputs = self.model(inputs)
 
-            ids = rearrange(ids, '(b n) -> b n',
-                            n=tiles_per_sample)[:, 0]
-
             res = {
-                'ids': ids.cpu().detach(),
-                'cls': enc_cls.cpu().detach(),
-                'pos_tile': pos_tile.cpu().detach(),
-                'pos': pos.cpu().detach(),
-                'attn': info['attn'].cpu().detach(),
-                'dots': info['dots'],
-                'enc_seq': enc_seq.cpu().detach(),
-                'org_seq': org_seq.cpu().detach()
+                'ids': batch_inputs['ids_of_sample'].cpu().detach(),
+                'cls': outputs['enc_cls'].cpu().detach(),
+                'pos_tile': batch_inputs['pos_tile'].cpu().detach(),
+                'pos': batch_inputs['pos'].cpu().detach(),
+                'attn': outputs['attn'].cpu().detach(),
+                'dots': outputs['dots'],
+                'enc_seq': outputs['enc_seq'].cpu().detach(),
+                'org_seq': outputs['org_seq'].cpu().detach()
             }
 
             file_id = res['ids'].item()
@@ -746,34 +595,25 @@ class HybridFitter:
             shutil.copy(epoch_output_path, fname_best)
 
         if epoch % save_freq == 0:
-            # print("Saving new checkpoints!")
             shutil.copy(epoch_output_path,
                         os.path.join(checkpoints_folder, "%04d.pt" % epoch))
 
-    def get_logger(self, primary_worker):
+    def get_logger(self):
         file_mode = 'a' if self.args.resume_train or self.args.mode == 'extract' else 'w'
-        if primary_worker:
-            # print("This is primary worker")
-            self.writer = compose_logging(file_mode,
-                                          self.model_name,
-                                          to_console=True,
-                                          override=self.args.override_logs)
-            for arg, value in sorted(vars(self.args).items()):
-                self.writer['meta'].info("Argument %s: %r", arg, value)
-        else:
-            self.writer = {}
-            self.writer['meta'] = NullWriter()
-            self.writer['data'] = NullWriter()
+        self.writer = compose_logging(file_mode,
+                                      self.model_name,
+                                      to_console=True,
+                                      override=self.args.override_logs)
+        for arg, value in sorted(vars(self.args).items()):
+            self.writer['meta'].info("Argument %s: %r", arg, value)
 
-    def fit(self, gpu, data_dict, procedure='train'):
-        self.gpu = gpu
+    def fit(self, data_dict, procedure='train'):
         if torch.cuda.is_available():
-            self.device = torch.device(
-                'cuda:0' if gpu is None else f'cuda:{gpu}')
+            self.device = torch.device('cuda:0')
         else:
             self.device = torch.device('cpu')
-
         self.current_epoch = 1
+
         metrics = {
             'classification': 'auc',
             'survival': 'c-index',
@@ -782,12 +622,9 @@ class HybridFitter:
         }
         self.metric = metrics[self.args.outcome_type]
 
-        if gpu is not None:
-            print("Use GPU: {} for training".format(gpu))
-
         self.es = EarlyStopping(patience=self.args.patience, mode='max')
 
-        self.get_logger(primary_worker=True)
+        self.get_logger()
 
         model = HybridModel(in_dim=self.args.num_features,
                             out_dim=self.num_classes,
@@ -798,17 +635,8 @@ class HybridFitter:
 
         if not torch.cuda.is_available():
             print('using CPU, this will be slow')
-        elif gpu is not None:
-            # print("training on single gpu")
-            torch.cuda.set_device(gpu)
-            # model = model.cuda(gpu)
-            model = _CustomDataParallel(model).cuda()
         else:
             model = _CustomDataParallel(model).cuda()
-
-        if not torch.cuda.is_available():
-            pass
-        else:
             self.loss_fn.cuda()
 
         self.model = model
@@ -837,8 +665,7 @@ class HybridFitter:
             self.writer['data'].info(df_sum.to_csv())
 
         elif procedure == 'extract':
-            subdir = f"{self.args.timestr}-{self.args.resume}/{self.args.offset}"
-            save_loc = f"features/{subdir}/{self.args.cancer}/{self.epoch:04d}/meta.pickle"
+            save_loc = f"features/{args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/meta.pickle"
             os.makedirs(os.path.dirname(save_loc), exist_ok=True)
             data_dict['val'].to_pickle(save_loc)
             print('=' * 30)

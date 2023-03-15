@@ -3,8 +3,8 @@ import torch.nn as nn
 from einops import rearrange, repeat
 import numpy as np
 
-from .utils import fill_zeros, fill_mask, masked_average, MaskingGenerator
-from .vit.deepvit import Transformer
+from maskhit.model.archs.utils import fill_zeros, fill_mask, masked_average, MaskingGenerator
+from maskhit.model.archs.vit.deepvit import Transformer
 
 
 class AggViT(nn.Module):
@@ -48,7 +48,7 @@ class AggViT(nn.Module):
                                        visualization=args.visualization,
                                        args=self.args)
 
-        self.margin = self.args.tile_size // self.args.patch_size
+        self.margin = args.region_size // args.patch_size
 
         if args.mlm_loss in ['cluster', 'null']:
             self.proj = nn.Identity()
@@ -75,8 +75,11 @@ class AggViT(nn.Module):
         b, p, _ = x.shape
         n = 1
 
-        masks = torch.tensor(np.stack([self.mpg() for _ in range(b)
-                                       ])).view(b, -1).to(x.device)
+        masks = torch.tensor(
+            np.stack([
+                self.mpg()[pos[ii, :, 0].cpu(), pos[ii, :, 1].cpu()]
+                for ii in range(b)
+            ])).view(b, -1).to(x.device)
 
         # the new positional encoding
         if self.args.prob_mask == 0:

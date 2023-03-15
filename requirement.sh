@@ -11,3 +11,4 @@ pip install openslide-python
 # install additional packages
 pip install pandarallel pandas scikit-image scikit-learn einops tqdm lifelines pyyaml
 pip install git+https://github.com/ildoonet/pytorch-gradual-warmup-lr.git
+pip install opencv-python

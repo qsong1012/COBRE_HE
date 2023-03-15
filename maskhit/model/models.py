@@ -1,10 +1,9 @@
-# adapting code from https://github.com/zhoudaquan/dvit_repo
-
 import torch
 import torch.nn as nn
 from einops import rearrange
-from .helper import create_model, parse_archs
-from .archs import AggAvgPool, AggAttn, AggMHAttn, AggViT, AggDeepAttnMISL
+from maskhit.model.backbone import create_model
+from maskhit.model.helper import parse_archs
+from maskhit.model.archs import AggAvgPool, AggAttn, AggMHAttn, AggViT, AggDeepAttnMISL
 
 
 ########################################
@@ -44,10 +43,10 @@ class HybridModel(nn.Module):
         self.args = args
         self.model_name = model_name
         self.outcome_type = outcome_type
-        if self.args.use_features:
-            self.backbone = nn.Identity()
-        else:
+        if self.args.use_patches:
             self.backbone = ResNetExtractor()
+        else:
+            self.backbone = nn.Identity()
 
         self.proj = nn.Sequential(nn.Identity())
 
@@ -69,36 +68,39 @@ class HybridModel(nn.Module):
                               outcome_type=outcome_type)
 
     def forward(self, inputs):
-        x = inputs['x']
+        x = inputs['imgs']
         pos = inputs['pos']
         ids = inputs['ids']
-        n_tiles = inputs['n_tiles']
+        n_regions = inputs['regions_per_patient']
+        pct_valid = inputs['pct_valid']
 
         x = self.backbone(x)
 
         # tile-wise aggregation
         x = rearrange(x, 'b t p d -> (b t) p d')
         pos = rearrange(pos, 'b t p d -> (b t) p d')
-        stage1_inputs = {
-            'x': x,
-            'pos': pos
-        }
+        pct_valid = rearrange(pct_valid, 'b t -> (b t)')
+
+        valid_tiles_sel = pct_valid > 0
+        x_valid = x[valid_tiles_sel]
+        pos_valid = pos[valid_tiles_sel]
+
+        stage1_inputs = {'x': x_valid, 'pos': pos_valid}
 
         stage1_outputs = self.attn(stage1_inputs,
                                    avg_pool=self.args.avg_cls,
                                    prob_mask=self.args.prob_mask)
 
+        enc_cls = torch.zeros(x.size(0), self.attn.dim, dtype=x.dtype, device=x.device)
+        enc_cls[pct_valid > 0, ] = stage1_outputs['enc_cls']
+
         # enc_cls, enc_seq, org_seq, info
 
         # wsi-wise aggregation
-        ids = ids.unsqueeze(1).expand(-1, n_tiles).flatten()
+        ids = ids.unsqueeze(1).expand(-1, n_regions).flatten()
         stage2_inputs = {
-            'x':
-            rearrange(stage1_outputs['enc_cls'],
-                      '(b n) d -> b n d',
-                      n=n_tiles),
-            'pos':
-            inputs['pos_tile']
+            'x': rearrange(enc_cls, '(b n) d -> b n d', n=n_regions),
+            'pos': inputs['pos_tile']
         }
 
         stage2_ouputs = self.fuse(stage2_inputs, avg_pool=False)
@@ -106,9 +108,20 @@ class HybridModel(nn.Module):
         # make the prediction
         out = self.pred(stage2_ouputs['enc_cls'])
 
+
+        enc_cls = stage1_outputs['enc_cls']
+        if self.args.outcome_type == 'mlm':
+            if self.training:
+                mode = 'train'
+            else:
+                mode = 'val'
+            enc_cls = rearrange(enc_cls,
+                                '(b n) d -> b n d',
+                                n=self.args.mode_ops[mode]['regions_per_patient'])
+
         outputs = {
             'out': out,
-            'enc_cls': stage1_outputs['enc_cls'],
+            'enc_cls': enc_cls,
             'enc_seq': stage1_outputs['enc_seq'],
             'org_seq': stage1_outputs['org_seq'],
             'attn': stage1_outputs.get('attn', None),

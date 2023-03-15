@@ -45,33 +45,40 @@ class InfoNCE(nn.Module):
         >>> output = loss(query, positive_key, negative_keys)
     """
 
-    def __init__(self, temperature=0.1, reduction='mean', negative_mode='unpaired'):
+    def __init__(self,
+                 temperature=0.1,
+                 reduction='mean',
+                 negative_mode='unpaired'):
         super().__init__()
         self.temperature = temperature
         self.reduction = reduction
         self.negative_mode = negative_mode
 
     def forward(self, query, positive_key, negative_keys=None):
-        return info_nce(query, positive_key, negative_keys,
+        return info_nce(query,
+                        positive_key,
+                        negative_keys,
                         temperature=self.temperature,
                         reduction=self.reduction,
                         negative_mode=self.negative_mode)
 
 
-def info_nce(
-        query, 
-        positive_key, 
-        negative_keys=None, 
-        temperature=0.1, 
-        reduction='mean', 
-        negative_mode='unpaired', 
-        to_normalize=True,
-        dist='cosine'):
+def info_nce(query,
+             positive_key,
+             negative_keys=None,
+             temperature=0.1,
+             reduction='mean',
+             negative_mode='unpaired',
+             to_normalize=True,
+             dist='cosine'):
 
     if dist != 'cosine' and negative_keys is not None:
-        raise ValueError(f"distance <{dist}> only works when <negative_keys> is None.")
+        raise ValueError(
+            f"distance <{dist}> only works when <negative_keys> is None.")
     if dist != 'cosine' and to_normalize:
-        raise ValueError('to_normalize can only be set to False when not using cosine distance')
+        raise ValueError(
+            'to_normalize can only be set to False when not using cosine distance'
+        )
     # Check input dimensionality.
     if query.dim() != 2:
         raise ValueError('<query> must have 2 dimensions.')
@@ -79,32 +86,46 @@ def info_nce(
     #     raise ValueError('<positive_key> must have 2 dimensions.')
     if negative_keys is not None:
         if negative_mode == 'unpaired' and negative_keys.dim() != 2:
-            raise ValueError("<negative_keys> must have 2 dimensions if <negative_mode> == 'unpaired'.")
+            raise ValueError(
+                "<negative_keys> must have 2 dimensions if <negative_mode> == 'unpaired'."
+            )
         if negative_mode == 'paired' and negative_keys.dim() != 3:
-            raise ValueError("<negative_keys> must have 3 dimensions if <negative_mode> == 'paired'.")
+            raise ValueError(
+                "<negative_keys> must have 3 dimensions if <negative_mode> == 'paired'."
+            )
 
     # Check matching number of samples.
     if len(query) != len(positive_key):
-        raise ValueError('<query> and <positive_key> must must have the same number of samples.')
+        raise ValueError(
+            '<query> and <positive_key> must must have the same number of samples.'
+        )
     if negative_keys is not None:
         if negative_mode == 'paired' and len(query) != len(negative_keys):
-            raise ValueError("If negative_mode == 'paired', then <negative_keys> must have the same number of samples as <query>.")
+            raise ValueError(
+                "If negative_mode == 'paired', then <negative_keys> must have the same number of samples as <query>."
+            )
 
     # Embedding vectors should have same number of components.
     if query.shape[-1] != positive_key.shape[-1]:
-        raise ValueError('Vectors of <query> and <positive_key> should have the same number of components.')
+        raise ValueError(
+            'Vectors of <query> and <positive_key> should have the same number of components.'
+        )
     if negative_keys is not None:
         if query.shape[-1] != negative_keys.shape[-1]:
-            raise ValueError('Vectors of <query> and <negative_keys> should have the same number of components.')
+            raise ValueError(
+                'Vectors of <query> and <negative_keys> should have the same number of components.'
+            )
 
     if to_normalize:
         # Normalize to unit vectors
-        query, positive_key, negative_keys = normalize(query, positive_key, negative_keys)
+        query, positive_key, negative_keys = normalize(query, positive_key,
+                                                       negative_keys)
     if negative_keys is not None:
         # Explicit negative keys
 
         # Cosine between positive pairs
-        positive_logit = torch.einsum('nd,npd->np', query, positive_key).min(1, keepdim=True)[0]
+        positive_logit = torch.einsum('nd,npd->np', query,
+                                      positive_key).min(1, keepdim=True)[0]
         # positive_logit = torch.sum(query.unsqueeze(1) * positive_key, dim=1, keepdim=True)
         # print(query.shape, positive_key.shape, positive_logit.shape, (query.unsqueeze(1) * positive_key).shape)
 
@@ -119,7 +140,9 @@ def info_nce(
 
         # First index in last dimension are the positive samples
         logits = torch.cat([positive_logit, negative_logits], dim=1)
-        labels = torch.zeros(len(logits), dtype=torch.long, device=query.device)
+        labels = torch.zeros(len(logits),
+                             dtype=torch.long,
+                             device=query.device)
     else:
         # Negative keys are implicitly off-diagonal positive keys.
 
@@ -148,8 +171,8 @@ def normalize(*xs):
 
 
 if __name__ == '__main__':
-    aa = torch.randn(10,20)
-    bb = torch.randn(10,20)*10 + aa
+    aa = torch.randn(10, 20)
+    bb = torch.randn(10, 20) * 10 + aa
     info_nce(aa, bb)
     info_nce(aa, bb, dist='l1', to_normalize=False)
     info_nce(aa, bb, dist='l2', to_normalize=False)
@@ -157,6 +180,6 @@ if __name__ == '__main__':
     info_nce(aa, aa, dist='l1', to_normalize=False)
     info_nce(aa, aa, dist='l2', to_normalize=False)
 
-    info_nce(aa, bb/2)
-    info_nce(aa, bb/2, dist='l1', to_normalize=False)
-    info_nce(aa, bb/2, dist='l2', to_normalize=False)
+    info_nce(aa, bb / 2)
+    info_nce(aa, bb / 2, dist='l1', to_normalize=False)
+    info_nce(aa, bb / 2, dist='l2', to_normalize=False)
