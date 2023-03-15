@@ -1,7 +1,3 @@
-# Installation
-* Install the required packages following requirements in `requirement.sh`
-* Install this package:
-`pip install -e .`
 # Prepare the datasets to be used for this repo: see WSI_PreProcess
 The following items should be presented in this repo:
 * data folder: contains the preprocessed feature vectors
