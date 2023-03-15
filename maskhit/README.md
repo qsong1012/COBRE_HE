@@ -53,7 +53,7 @@ The following items should be presented in this repo:
 * `--num-patches`: number of patches to sample from each region
 * `--sample-all`: sample all patches from each region
 
-## Determine overlap between regions
+## Determine overlap between regions and perform systematic sampling
 * `--grid-size`: specify the grid size when sampling regions from WSI. For example, for a region containing LxL patches, 
     - grid size = 1: sample regions with max overlap
     - grid size = L/2: sample regions with 50% overlap
