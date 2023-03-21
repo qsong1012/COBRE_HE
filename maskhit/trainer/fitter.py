@@ -193,12 +193,13 @@ class HybridFitter:
         repeats_per_epoch = self.args.mode_ops[mode]['repeats_per_epoch']
         svs_per_patient = self.args.mode_ops[mode]['svs_per_patient']
 
+        group_var = 'id_svs' if self.args.sample_svs else 'id_patient'
+
         if mode != 'train' and self.args.outcome_type != 'mlm':
             self.meta_df[mode] = _df
 
         elif self.args.sample_patient or self.args.sample_svs:
             res = []
-            group_var = 'id_svs' if self.args.sample_svs else 'id_patient'
             for r_i in range(repeats_per_epoch):
                 # random sample n svs for each patient during each iteration
                 # shuffle by group
@@ -529,7 +530,10 @@ class HybridFitter:
         return 0
 
     def extract_features(self, df_val, epoch=0):
-        # print("Preparing val data ...")
+
+        regions_per_patient = self.args.mode_ops['predict']['regions_per_patient']
+        svs_per_patient = self.args.mode_ops['predict']['svs_per_patient']
+
         self.prepare_datasets(df_val, 'predict')
         self.get_datasets(self.meta_df['predict'], 'predict')
 
@@ -539,19 +543,18 @@ class HybridFitter:
 
         # forward prop over all validation data
         counts = 0
-        # print("Start extraction loop ...")
         for i, sample in enumerate(tqdm.tqdm(self.dataloaders['predict'])):
-            batch_inputs = unpack_sample(sample, 1, self.device)
+            batch_inputs = unpack_sample(sample, regions_per_patient, svs_per_patient, self.device)
 
             # forward
             with torch.set_grad_enabled(False):
-                outputs = self.model(inputs)
+                outputs= self.model(batch_inputs)
 
             res = {
                 'ids': batch_inputs['ids_of_sample'].cpu().detach(),
                 'cls': outputs['enc_cls'].cpu().detach(),
                 'pos_tile': batch_inputs['pos_tile'].cpu().detach(),
-                'pos': batch_inputs['pos'].cpu().detach(),
+                'pos': outputs['pos'].cpu().detach(),
                 'attn': outputs['attn'].cpu().detach(),
                 'dots': outputs['dots'],
                 'enc_seq': outputs['enc_seq'].cpu().detach(),
@@ -559,10 +562,8 @@ class HybridFitter:
             }
 
             file_id = res['ids'].item()
-            pos_x, pos_y = res['pos_tile'].squeeze().tolist()
-
-            subdir = f"{self.args.timestr}-{self.args.resume}/{self.args.offset}"
-            save_loc = f"features/{subdir}/{self.args.cancer}/{self.epoch:04d}/{file_id}-{pos_x}-{pos_y}.pickle"
+            positions = res['pos_tile'].view(-1,2).tolist()
+            save_loc = f"features/{self.args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/{file_id}.pickle"
             os.makedirs(os.path.dirname(save_loc), exist_ok=True)
             with open(save_loc, 'wb') as f:
                 pickle.dump(res, f)
@@ -665,7 +666,7 @@ class HybridFitter:
             self.writer['data'].info(df_sum.to_csv())
 
         elif procedure == 'extract':
-            save_loc = f"features/{args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/meta.pickle"
+            save_loc = f"features/{self.args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/meta.pickle"
             os.makedirs(os.path.dirname(save_loc), exist_ok=True)
             data_dict['val'].to_pickle(save_loc)
             print('=' * 30)

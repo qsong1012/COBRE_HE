@@ -172,6 +172,8 @@ class WsiTileSampler:
 
         grid_sampling_mode = n_tiles > 1
         if grid_sampling_mode:
+            if self.args.visualization:
+                offset_x = offset_y = 0
             offset_x, offset_y = self.find_eligible_offset(margin)
             _df = self.df.loc[(self.df.pos_x % step == offset_x)
                               & (self.df.pos_y % step == offset_y)]

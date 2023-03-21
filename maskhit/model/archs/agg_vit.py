@@ -150,6 +150,7 @@ class AggViT(nn.Module):
             'enc_cls': enc_cls,
             'enc_seq': enc_seq,
             'org_seq': org_seq,
+            'pos': pos,
             'masks': masks.view(-1),
             'zeros': zeros.view(-1),
             'attn': tr_output['attn'],

@@ -71,10 +71,7 @@ class SlidesDataset(Dataset):
         self.ids = self.df[self.args.id_var].tolist()
         self.files = self.df['id_svs'].tolist()
         self.folders = self.df['folder'].tolist()
-        if args.visualization:
-            self.locs = self.df['pos'].tolist()
-        else:
-            self.locs = [None for _ in range(self.df.shape[0])]
+        self.locs = [None for _ in range(self.df.shape[0])]
 
         self.wsi = None
         self.sample_size = self.df.shape[0]
@@ -90,7 +87,7 @@ class SlidesDataset(Dataset):
     def _get_patch_meta(self, folder, fname, loc):
         # get all the patches for one wsi
         meta_one = pd.read_pickle(
-            f'data/{folder}/{fname}/{self.args.patch_spec}/meta.pickle')
+            f'{self.args.data}/{folder}/{fname}/{self.args.patch_spec}/meta.pickle')
         meta_one['valid'].fillna(0, inplace=True)
         meta_one.reset_index(drop=True, inplace=True)
 
@@ -112,7 +109,7 @@ class SlidesDataset(Dataset):
 
     def sample_features(self, folder, svs_identifier, loc):
         features_one = torch.load(
-            f'data/{folder}/{svs_identifier}/{self.args.patch_spec}/{self.args.backbone}/features.pt'
+            f'{self.args.data}/{folder}/{svs_identifier}/{self.args.patch_spec}/{self.args.backbone}/features.pt'
         ).detach()
         tile_one = self._get_patch_meta(folder=folder,
                                         fname=svs_identifier,
@@ -151,11 +148,21 @@ class SlidesDataset(Dataset):
         outcome = self.outcomes[idx, :]
         imgs, pos_tile, pos, pct_valid = one_sample['imgs'], one_sample[
             'loc_tiles'], one_sample['locs_local'], one_sample['pct_valid']
-        sample = (zero_padding_first_dim(imgs, self.n_tiles), id, outcome,
-                  zero_padding_first_dim(pos, self.n_tiles),
-                  zero_padding_first_dim(pos_tile, self.n_tiles),
-                  zero_padding_first_dim(tiles, self.n_tiles),
-                  zero_padding_first_dim(pct_valid, self.n_tiles))
+
+        if self.args.visualization:
+            sample = (imgs,
+                      id,
+                      outcome,
+                      pos,
+                      pos_tile,
+                      tiles,
+                      pct_valid)
+        else:
+            sample = (zero_padding_first_dim(imgs, self.n_tiles), id, outcome,
+                      zero_padding_first_dim(pos, self.n_tiles),
+                      pos_tile,
+                      zero_padding_first_dim(tiles, self.n_tiles),
+                      zero_padding_first_dim(pct_valid, self.n_tiles))
         return sample
 
     def __getitem__(self, idx):

@@ -76,8 +76,8 @@ args.mode_ops['val']['num_patches'] = args.num_patches_val
 args.mode_ops['predict']['num_patches'] = args.num_patches_val
 
 args.mode_ops['train']['num_tiles'] = args.regions_per_svs
-if not args.outcome_type == 'mlm' and not args.sample_all:
-    args.mode_ops['val']['num_tiles'] = 64
+if args.regions_per_svs_val > 0:
+    args.mode_ops['val']['num_tiles'] = args.regions_per_svs_val
 else:
     args.mode_ops['val']['num_tiles'] = args.regions_per_svs
 args.mode_ops['predict']['num_tiles'] = args.regions_per_svs
@@ -296,6 +296,9 @@ def main():
 
     elif args.mode == 'extract':
         hf.fit(data_dict, procedure='extract')
+
+    else:
+        print(f"Mode {args.mode} has not been implemented!")
 
 
 if __name__ == '__main__':

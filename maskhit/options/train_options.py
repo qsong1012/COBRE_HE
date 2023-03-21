@@ -99,6 +99,10 @@ class TrainOptions(BaseOptions):
                                  type=int,
                                  default=1,
                                  help='number of svs sampled in sample-patient mode')
+        self.parser.add_argument('--regions-per-svs-val',
+                                 type=int,
+                                 default=0,
+                                 help='number of svs sampled in sample-patient mode when validation/testing')
         self.parser.add_argument('--data',
                                  type=str,
                                  default='data',

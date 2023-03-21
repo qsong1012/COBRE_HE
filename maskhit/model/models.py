@@ -71,7 +71,10 @@ class HybridModel(nn.Module):
         x = inputs['imgs']
         pos = inputs['pos']
         ids = inputs['ids']
-        n_regions = inputs['regions_per_patient']
+        if self.args.visualization:
+            n_regions  = x.size(0)
+        else:
+            n_regions = inputs['regions_per_patient']
         pct_valid = inputs['pct_valid']
 
         x = self.backbone(x)
@@ -119,14 +122,25 @@ class HybridModel(nn.Module):
                                 '(b n) d -> b n d',
                                 n=self.args.mode_ops[mode]['regions_per_patient'])
 
+
         outputs = {
+            # prediction output
             'out': out,
+            # relative positions
+            'pos': stage1_outputs['pos'],
+            # class token output
             'enc_cls': enc_cls,
+            # patch token output
             'enc_seq': stage1_outputs['enc_seq'],
+            # original patch token
             'org_seq': stage1_outputs['org_seq'],
+            # attention score
             'attn': stage1_outputs.get('attn', None),
+            # activate score (unscaled attention score)
             'dots': stage1_outputs.get('dots', None),
+            # zero map
             'zeros': stage1_outputs.get('zeros', None),
+            # mask map
             'masks': stage1_outputs.get('masks', None),
         }
         return outputs
