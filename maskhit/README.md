@@ -50,8 +50,7 @@ The following items should be presented in this repo:
 * `--regions-per-svs`: number of regions to select from one svs
 
 ## sample patches from region
-* `--num-patches`: number of patches to sample from each region
-* `--sample-all`: sample all patches from each region
+* `--num-patches`: number of patches to sample from each region: if 0, then it will sample all the patches from each region
 
 ## Determine overlap between regions and perform systematic sampling
 * `--grid-size`: specify the grid size when sampling regions from WSI. For example, for a region containing LxL patches, 
@@ -61,7 +60,7 @@ The following items should be presented in this repo:
 * Determine number of regions to sample from the WSI:
     - `python utils/get_region_info.py --meta-svs=meta/tcga_brca_svs.pickle --grid-size=10`
     - From the output, determine a reasonable number of regions to sample from each WSI. For example, we can use 64 regions if the majority of WSIs contain less than 64 regions.
-* Specify the grid size and number of regions in model training. To save computational memory, specify the number of patches to sample from each region and do not use `--sample-all`
+* Specify the grid size and number of regions in model training. To save computational memory, specify the number of patches to sample from each region
     - `--grid-size=10 --regions-per-svs=64 --num-patches=100`
 
 # Fine-tune for downstream tasks
@@ -69,13 +68,24 @@ The following items should be presented in this repo:
 ## Example commands:
 
 Single fold finetuning:
-`python train.py --study=colon --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy --fold=0 --timestr=20230120_120000`
+`python train.py --study=colon --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --num-patches=0 --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy --fold=0 --timestr=20230120_120000`
 
 5-fold cross-validation:
-`python cross_validation.py colon 20230120_120000 --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --sample-all --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy`
+`python cross_validation.py colon 20230120_120000 --cancer=TCGA_COAD --mil1=vit_h8l12 --mil2=ap --num-patches=0 --meta-svs=meta/tcga_coad_svs.pickle --meta-all=meta/tcga_coad_meta.pickle --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --ffpe-only --outcome=status --outcome-type=survival --sample-patient --dropout=0.2 -b=4 --resume=pretrained_20221013_201713 --resume-epoch=0500 --resume-fuzzy`
 
 Summary model performance:
 `python utils/collect_predictions.py colon 20230120_120000`
+
+Create attention maps
+* Prepare a visualization dataset for selected slides
+    - Modify and run `utils/prepare_visualization_data.py`
+* Obtain attention values systematically across entire slide
+    - Attention score for pre-trained model
+        + `python train.py --cancer=TCGA_BRCA --mil1=vit_h8l12 --region-size=4480 --magnification=10 --ffpe-only --mode=extract --visualization --repeats-per-epoch=1 --regions-per-svs=1 --meta-svs=meta/vis_tcga_brca_locs-split.pickle --meta-all=meta/vis_tcga_brca_meta-split.pickle --resume=[pre-trained model name]    --resume-fuzzy --resume-epoch=0500 -b=64 --by-location --data=data`
+    - Attention score for fine-tuned model
+        + `python train.py --cancer=TCGA_BRCA --mil1=vit_h8l12 --region-size=4480 --magnification=10 --ffpe-only --mode=extract --visualization --repeats-per-epoch=1 --regions-per-svs=1 --meta-svs=meta/vis_tcga_brca_locs-split.pickle --meta-all=meta/vis_tcga_brca_meta-split.pickle --resume=[fine-tuned model name]  --resume-fuzzy --resume-epoch=BEST -b=64 --by-location --data=data`
+* Create the attention map using Jupyter Notebook
+    - `create attention maps.ipynb`
 
 # Notations
 * `<CANCER>`: name of cancer subset, such as TCGA_COAD, etc
