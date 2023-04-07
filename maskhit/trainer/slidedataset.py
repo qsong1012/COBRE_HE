@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 from PIL import Image
 from maskhit.trainer.wsitilesampler import WsiTileSampler
-from maskhit.trainer.helper import zero_padding_first_dim
+from maskhit.trainer.helper import zero_padding
 
 ###########################################
 #          CUSTOM DATALOADER              #
@@ -53,9 +53,9 @@ class SlidesDataset(Dataset):
                  writer=None,
                  mode='train',
                  transforms=None,
-                 n_tiles=1,
+                 num_regions=1,
                  num_patches=100,
-                 margin=None,
+                 region_length=None,
                  args=None):
 
         self.df = data_file
@@ -71,15 +71,19 @@ class SlidesDataset(Dataset):
         self.ids = self.df[self.args.id_var].tolist()
         self.files = self.df['id_svs'].tolist()
         self.folders = self.df['folder'].tolist()
-        self.locs = [None for _ in range(self.df.shape[0])]
+        if args.visualization:
+            self.locs = self.df['pos'].tolist()
+        else:
+            self.locs = [None for _ in range(self.df.shape[0])]
 
         self.wsi = None
         self.sample_size = self.df.shape[0]
         self.mode = mode
         self.transforms = transforms
-        self.n_tiles = n_tiles
-        self.margin = margin
+        self.num_regions = num_regions
+        self.region_length = region_length
         self.num_patches = num_patches
+        self.sample_all = num_patches == (region_length * region_length)
 
     def __len__(self):
         return self.sample_size
@@ -93,14 +97,14 @@ class SlidesDataset(Dataset):
 
         # get all the valid features for one wsi
         wsi = WsiTileSampler(meta_one,
-                             sample_all=self.args.sample_all,
+                             sample_all=self.sample_all,
                              mode=self.mode,
                              num_patches=self.num_patches,
                              args=self.args)
 
         output = wsi.sample(self.num_patches,
-                            self.margin,
-                            n_tiles=self.n_tiles,
+                            self.region_length,
+                            num_regions=self.num_regions,
                             threshold=self.args.sampling_threshold,
                             weighted_sample=False,
                             loc=loc)
@@ -158,11 +162,11 @@ class SlidesDataset(Dataset):
                       tiles,
                       pct_valid)
         else:
-            sample = (zero_padding_first_dim(imgs, self.n_tiles), id, outcome,
-                      zero_padding_first_dim(pos, self.n_tiles),
-                      pos_tile,
-                      zero_padding_first_dim(tiles, self.n_tiles),
-                      zero_padding_first_dim(pct_valid, self.n_tiles))
+            sample = (zero_padding(imgs, self.num_regions, 0), id, outcome,
+                      zero_padding(pos, self.num_regions, 0),
+                      zero_padding(pos_tile, self.num_regions, 0),
+                      zero_padding(tiles, self.num_regions, 0),
+                      zero_padding(pct_valid, self.num_regions, 0))
         return sample
 
     def __getitem__(self, idx):

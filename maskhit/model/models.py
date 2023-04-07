@@ -127,7 +127,7 @@ class HybridModel(nn.Module):
             # prediction output
             'out': out,
             # relative positions
-            'pos': stage1_outputs['pos'],
+            'pos': stage1_outputs.get('pos', None),
             # class token output
             'enc_cls': enc_cls,
             # patch token output

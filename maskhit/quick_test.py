@@ -2,13 +2,13 @@ import sys
 import os
 import glob
 
-cancer = sys.argv[1]
+study = sys.argv[1]
 timestr = sys.argv[2]
 timestr_new = sys.argv[3]
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
-files = glob.glob(f'logs/{cancer}/{timestr}-*.log')
-files = [x for x in files if not 'test' in x.split('-')]
+files = glob.glob(f'logs/{study}/{timestr}-*.log')
+files = [x for x in files if not 'test' in x]
 files.sort()
 
 print("Log files found:")
@@ -20,6 +20,8 @@ for i, log_file in enumerate(files):
         org_cmd = f.readline().rstrip()
 
     org_cmd = org_cmd.replace("Argument all_arguments:", '').replace("'", "")
+    if "num-patches" in " ".join(sys.argv[4:]):
+        org_cmd = org_cmd.replace(" --sample-all", "")
     ckp = os.path.basename(log_file.replace('_meta.log', ''))
 
     new_cmd = ' '.join([

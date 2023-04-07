@@ -75,11 +75,14 @@ class AggViT(nn.Module):
         b, p, _ = x.shape
         n = 1
 
-        masks = torch.tensor(
-            np.stack([
-                self.mpg()[pos[ii, :, 0].cpu(), pos[ii, :, 1].cpu()]
-                for ii in range(b)
-            ])).view(b, -1).to(x.device)
+        if self.args.prob_mask == 0:
+            masks = torch.zeros(b, p).to(x.device)
+        else:
+            masks = torch.tensor(
+                np.stack([
+                    self.mpg()[pos[ii, :, 0].cpu(), pos[ii, :, 1].cpu()]
+                    for ii in range(b)
+                ])).view(b, -1).to(x.device)
 
         # the new positional encoding
         if self.args.prob_mask == 0:

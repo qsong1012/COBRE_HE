@@ -14,6 +14,10 @@ args = opt.parse()
 
 args.all_arguments = ' '.join(sys.argv[1:])
 
+
+assert not args.sample_all, "the argument --sample-all is deprecated, use --num-patches=0 instead"
+
+
 if args.cancer == '.':
     args.cancer = ""
 
@@ -22,30 +26,20 @@ if args.wd is not None:
 if args.lr is not None:
     args.lr_attn = args.lr_fuse = args.lr_pred = args.lr_loss = args.lr
 
-if args.num_patches_val == 0:
-    args.num_patches_val = args.num_patches
-
 if args.resume_train:
     args.warmup_epochs = 0
 
 if args.region_size is not None:
-    args.tile_margin = args.region_size // args.patch_size
+    args.region_length = args.region_size // args.patch_size
 else:
-    args.tile_margin = None
+    args.region_length = 0
 
-if args.tile_margin is not None:
+if args.region_length is not None and args.region_length > 0:
     assert_message = "grid size is measured in patches and need to be a positive number no larger than the region size / patch size"
-    assert args.grid_size <= args.tile_margin and args.grid_size > 0, assert_message
+    assert args.grid_size <= args.region_length and args.grid_size > 0, assert_message
 
 args.prop_mask = [int(x) for x in args.prop_mask.split(',')]
 args.prop_mask = [x / sum(args.prop_mask) for x in args.prop_mask]
-
-if args.preset == 'test':
-    args.mode = 'test'
-    args.test_type = 'test'
-    args.resume_epoch = 'BEST'
-    args.num_val = 10
-    args.batch_size = 10
 
 if args.sample_svs:
     args.id_var = 'id_svs_num'
@@ -59,51 +53,58 @@ else:
 
 args.patch_spec = f"mag_{args.magnification}-size_{args.patch_size}"
 
-args.margin = int(args.region_size //
-                  args.patch_size) if args.region_size is not None else None
 
+args.mode_ops = {'train': {}, 'val': {}, 'predict': {}}
 
 if args.num_patches > 0:
-    args.sample_all = False
-args.mode_ops = {
-    'train': {},
-    'val': {},
-    'predict': {}
-}
-
-args.mode_ops['train']['num_patches'] = args.num_patches
-args.mode_ops['val']['num_patches'] = args.num_patches_val
-args.mode_ops['predict']['num_patches'] = args.num_patches_val
-
-args.mode_ops['train']['num_tiles'] = args.regions_per_svs
-if args.regions_per_svs_val > 0:
-    args.mode_ops['val']['num_tiles'] = args.regions_per_svs_val
+    args.mode_ops['train']['num_patches'] = args.num_patches
 else:
-    args.mode_ops['val']['num_tiles'] = args.regions_per_svs
-args.mode_ops['predict']['num_tiles'] = args.regions_per_svs
+    if args.region_length is None:
+        args.mode_ops['train']['num_patches'] = 0
+    else:
+        args.mode_ops['train'][
+            'num_patches'] = args.region_length * args.region_length
 
+if args.num_patches_val is None:
+    args.mode_ops['val']['num_patches'] = args.mode_ops['train']['num_patches']
+elif args.num_patches_val > 0:
+    args.mode_ops['val']['num_patches'] = args.num_patches_val
+else:
+    args.mode_ops['val'][
+        'num_patches'] = args.region_length * args.region_length
+
+args.mode_ops['predict']['num_patches'] = args.mode_ops['val']['num_patches']
+
+args.mode_ops['train']['num_regions'] = args.regions_per_svs
+if args.regions_per_svs_val is None:
+    args.mode_ops['val']['num_regions'] = args.regions_per_svs
+else:
+    args.mode_ops['val']['num_regions'] = args.regions_per_svs_val
+args.mode_ops['predict']['num_regions'] = args.mode_ops['val']['num_regions']
 
 args.mode_ops['train']['svs_per_patient'] = args.svs_per_patient
 args.mode_ops['val']['svs_per_patient'] = args.svs_per_patient
 args.mode_ops['predict']['svs_per_patient'] = args.svs_per_patient
 
-args.mode_ops['train']['regions_per_patient'] = args.regions_per_svs * args.svs_per_patient
-args.mode_ops['val']['regions_per_patient'] = args.mode_ops['val']['num_tiles'] * args.svs_per_patient
-args.mode_ops['predict']['regions_per_patient'] = args.regions_per_svs * args.svs_per_patient
+args.mode_ops['train'][
+    'regions_per_patient'] = args.regions_per_svs * args.svs_per_patient
+args.mode_ops['val']['regions_per_patient'] = args.mode_ops['val'][
+    'num_regions'] * args.svs_per_patient
+args.mode_ops['predict']['regions_per_patient'] = args.mode_ops['val'][
+    'regions_per_patient']
 
 args.mode_ops['train']['repeats_per_epoch'] = args.repeats_per_epoch
 args.mode_ops['val']['repeats_per_epoch'] = 1
 args.mode_ops['predict']['repeats_per_epoch'] = args.repeats_per_epoch
 
-
-args.mode_ops['train']['batch_size'] = max(args.batch_size, args.svs_per_patient)
+args.mode_ops['train']['batch_size'] = max(args.batch_size,
+                                           args.svs_per_patient)
 args.mode_ops['val']['batch_size'] = max(args.batch_size, args.svs_per_patient)
-args.mode_ops['predict']['batch_size'] = max(args.batch_size, args.svs_per_patient)
-
+args.mode_ops['predict']['batch_size'] = max(args.batch_size,
+                                             args.svs_per_patient)
 
 if args.visualization:
     args.vis_spec = f"{args.timestr}-{args.resume}/{args.vis_layer}-{args.vis_head}"
-
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -201,7 +202,9 @@ def main():
 
     if args.meta_all is not None:
         meta_all = pd.read_pickle(args.meta_all)
-        if 'fold' in meta_all.columns:
+        if args.mode == 'extract':
+            meta_train = meta_val = meta_all
+        elif 'fold' in meta_all.columns:
             val_fold = (args.fold + 1) % 5
             test_fold = args.fold
             train_folds = [
@@ -241,6 +244,9 @@ def main():
     meta_svs['folder'] = meta_svs['cancer']
     meta_svs['sampling_weights'] = 1
     vars_to_include = ['id_patient', 'folder', 'id_svs', 'sampling_weights']
+    if 'svs_path' in meta_svs:
+        vars_to_include = ['id_patient', 'folder', 'id_svs', 'sampling_weights', 'svs_path']
+
     print('=' * 30)
     print(meta_svs.columns)
     print('=' * 30)

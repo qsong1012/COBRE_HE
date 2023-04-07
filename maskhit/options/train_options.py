@@ -101,7 +101,7 @@ class TrainOptions(BaseOptions):
                                  help='number of svs sampled in sample-patient mode')
         self.parser.add_argument('--regions-per-svs-val',
                                  type=int,
-                                 default=0,
+                                 default=None,
                                  help='number of svs sampled in sample-patient mode when validation/testing')
         self.parser.add_argument('--data',
                                  type=str,
@@ -132,8 +132,13 @@ class TrainOptions(BaseOptions):
                                      Unit: pixels')
         self.parser.add_argument('--num-patches',
                                  type=int,
-                                 default=-1,
-                                 help='number of patches to select from one patient during one iteration')
+                                 default=0,
+                                 help='number of patches from each region. If 0 will sample all patches')
+        self.parser.add_argument('--num-patches-val',
+                                 type=int,
+                                 default=None,
+                                 help=
+                                 'number of patches from each region at validation time')
         self.parser.add_argument('--sample-all',
                                  action='store_true',
                                  default=False,
@@ -143,11 +148,6 @@ class TrainOptions(BaseOptions):
                                  type=int,
                                  default=100,
                                  help='threshold when selecting tiles')
-        self.parser.add_argument('--num-patches-val',
-                                 type=int,
-                                 default=0,
-                                 help=
-                                 'number of patches to select from one patient during one iteration at validation time')
         self.parser.add_argument('--svs-per-patient',
                                  type=int,
                                  default=1,
@@ -390,6 +390,10 @@ class TrainOptions(BaseOptions):
                                  action='store_true',
                                  default=False,
                                  help='vis')
+        self.parser.add_argument('--by-location',
+                                 action='store_true',
+                                 default=False,
+                                 help='the svs meta file containing the position information of regions to be sampled')
         self.parser.add_argument('--vis-layer',
                                  type=int,
                                  default=None)

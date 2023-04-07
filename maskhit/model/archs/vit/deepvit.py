@@ -6,18 +6,22 @@ from einops.layers.torch import Rearrange
 
 
 def get_attention_map(attn_map):
+    """Computes attention rollout results.
+    Reference:
+        https://arxiv.org/abs/2005.00928
+    """
 
     # Average the attention weights across all heads.
     att_mat = torch.mean(attn_map, dim=1)
 
     # To account for residual connections, we add an identity matrix to the
     # attention matrix and re-normalize the weights.
-    residual_att = torch.eye(att_mat.size(1))
+    residual_att = torch.eye(att_mat.size(1)).to(attn_map.device)
     aug_att_mat = att_mat + residual_att
     aug_att_mat = aug_att_mat / aug_att_mat.sum(dim=-1).unsqueeze(-1)
 
     # Recursively multiply the weight matrices
-    joint_attentions = torch.zeros(aug_att_mat.size())
+    joint_attentions = torch.zeros(aug_att_mat.size()).to(attn_map.device)
     joint_attentions[0] = aug_att_mat[0]
 
     for n in range(1, aug_att_mat.size(0)):
@@ -25,7 +29,11 @@ def get_attention_map(attn_map):
                                            joint_attentions[n - 1])
 
     v = joint_attentions[-1]
-    return v.detach().numpy()
+    return v.detach()
+
+def get_attention_map_multi(attn_maps):
+    return torch.stack(
+        [get_attention_map(attn_maps[:, x]) for x in range(attn_maps.size(1))])
 
 
 class Residual(nn.Module):
@@ -177,27 +185,28 @@ class Transformer(nn.Module):
             output = attn(x, mask=mask)
             x = ff(output)
 
+
         if self.visualization:
             if self.args.vis_head is None and self.args.vis_layer is None:
-                attn_map = get_attention_map(
-                    torch.stack(x['attn'])[:, 0, :, :, :].cpu())
+                attn_map = get_attention_map_multi(
+                    torch.stack(x['attn'])[:, :, :, :, :])
             elif self.args.vis_head is None and self.args.vis_layer is not None:
-                attn_map = get_attention_map(
-                    torch.stack(x['attn'])[self.args.vis_layer,
-                                           0, :, :, :].cpu().unsqueeze(0))
+                attn_map = get_attention_map_multi(
+                    torch.stack(x['attn'])[
+                        self.args.vis_layer, :, :, :, :].cpu().unsqueeze(0))
             elif self.args.vis_layer is None and self.args.vis_head is not None:
-                attn_map = get_attention_map(
+                attn_map = get_attention_map_multi(
                     torch.stack(x['attn'])
-                    [:, 0, self.args.vis_head, :, :].cpu().unsqueeze(1))
+                    [:, :, self.args.vis_head, :, :].cpu().unsqueeze(2))
             else:
-                attn_map = get_attention_map(
+                attn_map = get_attention_map_multi(
                     torch.stack(x['attn'])
-                    [self.args.vis_layer, 0,
-                     self.args.vis_head, :, :].cpu().unsqueeze(0).unsqueeze(1))
+                    [self.args.vis_layer, :,
+                     self.args.vis_head, :, :].cpu().unsqueeze(0).unsqueeze(2))
 
             output = {
                 'out': x['out'],
-                'attn': torch.tensor(attn_map),
+                'attn': attn_map.cpu(),
                 'dots': None
             }
         else:

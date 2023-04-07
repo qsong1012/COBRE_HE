@@ -24,13 +24,17 @@ class WsiTileSampler:
         # sample from all the valid locations over the entire WSI
         df_valid = self.df.loc[self.df.valid == 1]
         n_valid = df_valid.shape[0]
-        n_patches = min(n_valid, n)
-        df_sample_valid = df_valid.sample(n_patches, replace=False)
+
+        assert n > 0, "number of patches to be sampled has to be larger than 0"
+
+        n_patches_valid = min(n_valid, n)
+
+        df_sample = df_valid.sample(n, replace=True)
+        pct_valid = n_patches_valid / n
 
         loc_tile = [0, 0]
-        locs_global = locs_local = df_sample_valid.pos.tolist()
-        fids = df_sample_valid.fid.tolist()
-        pct_valid = n_patches / n
+        locs_global = locs_local = df_sample.pos.tolist()
+        fids = df_sample.fid.tolist()
 
         output = {
             'loc_tile': loc_tile,
@@ -41,19 +45,19 @@ class WsiTileSampler:
         }
         return output
 
-    def sample_locally(self, n, margin, loc_tile):
+    def sample_locally(self, n, region_length, loc_tile):
         # if loc_tile is None:
-        #     n = margin * margin if self.sample_all else n
+        #     n = region_length * region_length if self.sample_all else n
         #     return torch.zeros(n, 512), [-1,
         #                                  -1], [[0, 0] for _ in range(n)], None
         x, y = loc_tile
-        x_range = range(x, x + margin)
-        y_range = range(y, y + margin)
+        x_range = range(x, x + region_length)
+        y_range = range(y, y + region_length)
         df_sel = self.df.loc[self.df.pos_x.isin(x_range)
                              & self.df.pos_y.isin(y_range)].copy()
 
         # get all posible positions
-        full_pos = np.indices((margin, margin)).reshape(2, -1).swapaxes(1, 0)
+        full_pos = np.indices((region_length, region_length)).reshape(2, -1).swapaxes(1, 0)
         df_full = pd.DataFrame(full_pos, columns=['x', 'y'])
 
         # original positions
@@ -66,11 +70,12 @@ class WsiTileSampler:
         df_full.loc[df_full.valid == 0, 'fid'] = -1
         df_full.pos_x.fillna(0, inplace=True)
         df_full.pos_y.fillna(0, inplace=True)
-        df_full['pos'] = df_full.apply(lambda x: [x['pos_x'],x['pos_y']], axis=1)
+        df_full['pos'] = df_full.apply(lambda x: [x['pos_x'], x['pos_y']],
+                                       axis=1)
 
         fids = df_full.fid.to_numpy()
         locs_global = np.stack(df_full.pos.tolist())
-        locs_local = np.indices((margin, margin))
+        locs_local = np.indices((region_length, region_length))
         if self.mode == 'extract':
             pass
         else:
@@ -91,9 +96,9 @@ class WsiTileSampler:
 
         invalid_locs = np.where(fids == -1)[0]
 
-        if self.args.sample_all:
+        if self.sample_all:
             pass
-        elif self.num_patches < margin * margin:
+        elif self.num_patches < region_length * region_length:
 
             if self.num_patches <= n_valid:
                 # select only valid patches
@@ -129,8 +134,8 @@ class WsiTileSampler:
 
         return output
 
-    def find_eligible_offset(self, margin):
-        mc = f"counts_{margin}"
+    def find_eligible_offset(self, region_length):
+        mc = f"counts_{region_length}"
         step = self.grid_size
         psp = step * step  # possible starting points
 
@@ -164,17 +169,26 @@ class WsiTileSampler:
                 print(dict_offsets)
         return offset_x, offset_y
 
-    def sample_tiles(self, margin, threshold, n_tiles, weighted_sample=False):
-        mc = f"counts_{margin}"
+    def sample_tiles(self,
+                     region_length,
+                     threshold,
+                     num_regions,
+                     loc=None,
+                     weighted_sample=False):
+
+        if loc is not None:
+            return [loc]
+
+        mc = f"counts_{region_length}"
 
         step = self.grid_size
         psp = step * step  # possible starting points
 
-        grid_sampling_mode = n_tiles > 1
+        grid_sampling_mode = num_regions > 1
         if grid_sampling_mode:
             if self.args.visualization:
                 offset_x = offset_y = 0
-            offset_x, offset_y = self.find_eligible_offset(margin)
+            offset_x, offset_y = self.find_eligible_offset(region_length)
             _df = self.df.loc[(self.df.pos_x % step == offset_x)
                               & (self.df.pos_y % step == offset_y)]
 
@@ -192,28 +206,30 @@ class WsiTileSampler:
             _df = self.df.loc[(self.df[mc] >= criterion)]
 
         if weighted_sample:
-            locs = _df.pos.sample(n_tiles, weights=_df[mc], replace=True).tolist()
+            locs = _df.pos.sample(num_regions, weights=_df[mc],
+                                  replace=True).tolist()
         elif self.args.outcome_type == 'mlm':
-            locs = _df.pos.sample(n_tiles, replace=True).tolist()
+            locs = _df.pos.sample(num_regions, replace=True).tolist()
         else:
-            n_tiles_valid = _df.shape[0]
-            locs = _df.pos.sample(min(n_tiles, n_tiles_valid), replace=False).tolist()
+            num_regions_valid = _df.shape[0]
+            locs = _df.pos.sample(min(num_regions, num_regions_valid),
+                                  replace=False).tolist()
         return locs
 
     def sample(self,
                n,
-               margin,
+               region_length,
                threshold,
-               n_tiles=1,
+               num_regions=1,
                loc=None,
                weighted_sample=False):
 
         if loc is not None:
             locs = [loc]
-        elif margin is None:
-            locs = [[0, 0] for _ in range(n_tiles)]
+        elif region_length == 0:
+            locs = [[0, 0] for _ in range(num_regions)]
         else:
-            locs = self.sample_tiles(margin, threshold, n_tiles,
+            locs = self.sample_tiles(region_length, threshold, num_regions, loc,
                                      weighted_sample)
 
         # sample for given start locations
@@ -223,11 +239,10 @@ class WsiTileSampler:
         fids = []
         pct_valid = []
         for i, loc in enumerate(locs):
-
-            if margin is None:
+            if region_length == 0:
                 one_tile = self.sample_globally(n)
             else:
-                one_tile = self.sample_locally(n, margin, loc)
+                one_tile = self.sample_locally(n, region_length, loc)
 
             loc_tiles.append(torch.tensor(one_tile['loc_tile']))
             locs_local.append(torch.tensor(one_tile['locs_local']))
@@ -242,4 +257,5 @@ class WsiTileSampler:
             'fids': torch.stack(fids),
             'pct_valid': torch.stack(pct_valid)
         }
+
         return output

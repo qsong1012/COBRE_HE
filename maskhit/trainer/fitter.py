@@ -143,7 +143,7 @@ class HybridFitter:
                                  ckp['epoch'])
         self.epoch = ckp['epoch']
 
-        if self.args.mode == 'train' and not self.args.resume_train:
+        if (self.args.mode == 'train' and not self.args.resume_train) or self.args.visualization:
             try:
                 del ckp['state_dict_model']['model.module.pred.fc.weight']
                 del ckp['state_dict_model']['model.module.pred.fc.bias']
@@ -230,9 +230,9 @@ class HybridFitter:
                            writer=self.writer,
                            mode=mode,
                            args=self.args,
-                           margin=self.args.margin,
+                           region_length=self.args.region_length,
                            num_patches=self.args.mode_ops[mode]['num_patches'],
-                           n_tiles=self.args.mode_ops[mode]['num_tiles'],
+                           num_regions=self.args.mode_ops[mode]['num_regions'],
                            transforms=transform)
 
         dl = DataLoader(ds,
@@ -561,9 +561,7 @@ class HybridFitter:
                 'org_seq': outputs['org_seq'].cpu().detach()
             }
 
-            file_id = res['ids'].item()
-            positions = res['pos_tile'].view(-1,2).tolist()
-            save_loc = f"features/{self.args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/{file_id}.pickle"
+            save_loc = f"features/{self.args.vis_spec}/{self.args.cancer}/{self.epoch:04d}/{i:06d}.pickle"
             os.makedirs(os.path.dirname(save_loc), exist_ok=True)
             with open(save_loc, 'wb') as f:
                 pickle.dump(res, f)

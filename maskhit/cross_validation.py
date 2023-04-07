@@ -1,3 +1,7 @@
+'''
+Use this script to run 5 fold cross-validation
+'''
+
 import sys
 import os
 
