@@ -1,5 +1,14 @@
+"""
+Usage: python train.py --study=ibd --mil1=vit_h8l12 --mil2=ap --num-patches=0 
+--meta-svs=../../SlidePreprocessing/for_vit/meta/IBD_PROJECT/svs_meta.pickle 
+--meta-all=../../SlidePreprocessing/for_vit/meta/ibd_project_meta.pickle 
+--magnification=5 --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --outcome='Dx (U=UC, C=Cr, I=Ind)' 
+--outcome-type=classification --sample-patient --dropout=0.2 -b=4
+"""
+
 import os
 import time
+import ast
 import pandas as pd
 import sys
 import glob
@@ -7,10 +16,13 @@ import socket
 from maskhit.trainer.fitter import HybridFitter
 from maskhit.trainer.losses import FlexLoss
 from options.train_options import TrainOptions
+from sklearn.model_selection import train_test_split
 
+print("\n")
 opt = TrainOptions()
 opt.initialize()
 args = opt.parse()
+
 
 args.all_arguments = ' '.join(sys.argv[1:])
 
@@ -51,7 +63,8 @@ if args.outcome_type == 'survival':
 else:
     args.outcomes = [args.outcome]
 
-args.patch_spec = f"mag_{args.magnification}-size_{args.patch_size}"
+
+args.patch_spec = f"mag_{str(args.magnification) + '.0'}-size_{args.patch_size}"
 
 
 args.mode_ops = {'train': {}, 'val': {}, 'predict': {}}
@@ -123,7 +136,47 @@ def get_resume_checkpoint(checkpoints_name, epoch_to_resume):
     return checkpoint_to_resume
 
 
-def prepare_data(meta_split, meta_file, round_month=False, vars_to_include=[]):
+def prepare_data(meta_split, meta_file, vars_to_include=[]):
+    """
+    Merge and preprocess meta_split and meta_file dataframes for use by the model.
+
+    Parameters
+    ----------
+    meta_split : pandas.DataFrame
+        A pandas dataframe containing the split information for each patient. The dataframe must contain information about patient ids
+
+    meta_file : pandas.DataFrame
+        A pandas dataframe containing the patient metadata. The dataframe must contain a column named 'id_patient'
+
+    vars_to_include : list, optional
+        A list of additional variables to include in the merged dataframe. Default is an empty list.
+
+    Returns
+    -------
+    pandas.DataFrame
+        A merged and preprocessed pandas dataframe containing the split information and patient metadata. The returned dataframe may contain the following columns:
+        - id_patient: unique patient ID
+        - case_number: patient case number (may need to be corrected - showing as 'SP' for IBD dataset)
+        - id_patient_num: encoded patient ID
+        - id_svs_num: encoded id_svs
+        - outcome: patient outcome variable, encoded for classification models e.g. 0, 1, 2 for three classes
+
+    """
+
+    if 'id_patient' not in meta_split.columns:
+        patient_ids = []
+        # iterating over the meta_split dataframe
+        for index, row in meta_split.iterrows():
+            # obtaining the paths of the files to the related slide
+            file_names = ast.literal_eval(row['Path'])
+            patient_id = file_names[0].split('/')[5].split(' ')[0]
+            patient_ids.append(patient_id) # adding patient id to the list
+        meta_split['id_patient'] = patient_ids # adding column to the meta_split dataframe
+        # formatting rows in meta_file of the id patients so they match that of meta_split df
+        meta_file['id_patient'] = meta_file['id_patient'].apply(lambda x: pd.Series(x.split(' ')[0]))
+
+    print(meta_split) # contains 'id_patient'
+    print(meta_file) 
 
     vars_to_keep = ['id_patient']
     if args.outcome_type in ['survival', 'mlm']:
@@ -131,19 +184,18 @@ def prepare_data(meta_split, meta_file, round_month=False, vars_to_include=[]):
     else:
         vars_to_keep.append(args.outcome)
 
-    print("vars_to_keep = ", vars_to_keep)
-    print("meta_file = ", meta_file.columns.tolist())
-    print("meta_split = ", meta_split.columns.tolist())
-
-    print(meta_file.id_patient.head(), meta_split.id_patient.head())
+    # Selects columns from meta_file df and merges them into meta_split based on a shared 'id_patient' column
+    # includes all the columns from meta_split and only the selected columns from meta_file
     meta_split = meta_split.merge(meta_file[vars_to_include],
                                   on='id_patient',
                                   how='inner')
+    
     print("meta_split = ", meta_split.columns, meta_split.shape)
     meta_split['id_patient_num'] = meta_split.id_patient.astype(
         'category').cat.codes
     meta_split['id_svs_num'] = meta_split.id_svs.astype('category').cat.codes
 
+    # converting the outcome variable to numerical value
     if args.outcome_type == 'classification':
         meta_split = meta_split.loc[~meta_split[args.outcome].isna()]
         meta_split[args.outcome] = meta_split[args.outcome].astype(
@@ -152,6 +204,10 @@ def prepare_data(meta_split, meta_file, round_month=False, vars_to_include=[]):
     elif args.outcome_type == 'survival':
         meta_split = meta_split.loc[~meta_split.status.isna()
                                     & ~meta_split.time.isna()]
+    
+    print("Printing pre-processed dataset")
+    print(meta_split)
+
     return meta_split
 
 
@@ -193,7 +249,7 @@ def main():
     args.hostname = socket.gethostname()
 
     # loading datasets
-    meta_svs = pd.read_pickle(args.meta_svs)
+    meta_svs = pd.read_pickle(args.meta_svs) 
 
     if args.ffpe_only:
         meta_svs = meta_svs.loc[meta_svs.slide_type == 'ffpe']
@@ -241,7 +297,7 @@ def main():
         meta_val = meta_val.loc[meta_val.cancer == args.cancer]
 
     print('shape of meta_svs = ', meta_svs.shape)
-    meta_svs['folder'] = meta_svs['cancer']
+    meta_svs['folder'] = 'IBD_PROJECT'
     meta_svs['sampling_weights'] = 1
     vars_to_include = ['id_patient', 'folder', 'id_svs', 'sampling_weights']
     if 'svs_path' in meta_svs:
@@ -255,18 +311,32 @@ def main():
 
     ########################################
     # prepare dataset
-    df_test = prepare_data(meta_split=meta_val,
-                           meta_file=meta_svs,
-                           vars_to_include=vars_to_include)
+    df_test = prepare_data(meta_split=meta_val,	
+                           meta_file=meta_svs,	
+                           vars_to_include=vars_to_include)	
+    df_train = prepare_data(meta_split=meta_train,	
+                            meta_file=meta_svs,	
+                            vars_to_include=vars_to_include)
 
-    df_train = prepare_data(meta_split=meta_train,
+    # check if train data is empty
+    if df_train.empty:
+        # split data randomly into train/test
+        df_full = prepare_data(meta_split=meta_val,
                             meta_file=meta_svs,
                             vars_to_include=vars_to_include)
+        df_train, df_test = train_test_split(df_full, test_size=0.3, random_state=42)
+    
+    print("TRAINING DATA")
+    print(df_train)
+    print("TESTING DATA")
+    print(df_test)
 
     if args.outcome_type == 'classification':
         num_classes = len(df_train[args.outcome].unique().tolist())
     else:
         num_classes = 1
+    
+    print("NUM CLASSES: " + str(num_classes))
 
     print('num_classes = ', num_classes)
     if args.weighted_loss:
