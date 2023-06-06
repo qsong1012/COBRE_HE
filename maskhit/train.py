@@ -16,27 +16,46 @@ import socket
 from maskhit.trainer.fitter import HybridFitter
 from maskhit.trainer.losses import FlexLoss
 from options.train_options import TrainOptions
-from sklearn.model_selection import train_test_split
+from utils.config import Config
 
 print("\n")
 opt = TrainOptions()
 opt.initialize()
-args = opt.parse()
 
+opt.parser.add_argument(
+        "--default-config-file", 
+        type=str,
+        default='configs/config_default.yaml',
+        help="Path to the base configuration file. Defaults to 'config.yaml'.")
+opt.parser.add_argument(
+        "--user-config-file", 
+        type=str,
+        help="Path to the user-defined configuration file.")
+
+args = opt.parse()
+print(f"args: {args}")
+
+# args_config = default_options()
+config = Config(args.user_config_file)
+
+print(f"TEST: {config.dataset.meta_svs}")
 
 args.all_arguments = ' '.join(sys.argv[1:])
 
 
 assert not args.sample_all, "the argument --sample-all is deprecated, use --num-patches=0 instead"
 
-
+print(f"args.cancer: {args.cancer}")
 if args.cancer == '.':
     args.cancer = ""
 
-if args.wd is not None:
-    args.wd_attn = args.wd_fuse = args.wd_pred = args.wd_loss = args.wd
+if config.patch.wd is not None:
+    args.wd_attn = args.wd_fuse = args.wd_pred = args.wd_loss = config.patch.wd
+
 if args.lr is not None:
-    args.lr_attn = args.lr_fuse = args.lr_pred = args.lr_loss = args.lr
+    config.model.lr_attn = args.lr_fuse = config.model.lr_pred = args.lr_loss = args.lr
+
+
 
 if args.resume_train:
     args.warmup_epochs = 0
@@ -58,19 +77,20 @@ if args.sample_svs:
 else:
     args.id_var = 'id_patient_num'
 
-if args.outcome_type == 'survival':
+if config.dataset.outcome_type == 'survival':
     args.outcomes = ['time', 'status']
 else:
-    args.outcomes = [args.outcome]
+    args.outcomes = [config.dataset.outcome]
 
 
-args.patch_spec = f"mag_{str(args.magnification) + '.0'}-size_{args.patch_size}"
+# args.patch_spec = f"mag_{str(args.magnification) + '.0'}-size_{args.patch_size}"
+args.patch_spec = f"mag_{float(config.patch.magnification):.1f}-size_{args.patch_size}"
 
 
 args.mode_ops = {'train': {}, 'val': {}, 'predict': {}}
 
-if args.num_patches > 0:
-    args.mode_ops['train']['num_patches'] = args.num_patches
+if config.patch.num_patches > 0:
+    args.mode_ops['train']['num_patches'] = config.patch.num_patches
 else:
     if args.region_length is None:
         args.mode_ops['train']['num_patches'] = 0
@@ -175,14 +195,12 @@ def prepare_data(meta_split, meta_file, vars_to_include=[]):
         # formatting rows in meta_file of the id patients so they match that of meta_split df
         meta_file['id_patient'] = meta_file['id_patient'].apply(lambda x: pd.Series(x.split(' ')[0]))
 
-    print(meta_split) # contains 'id_patient'
-    print(meta_file) 
 
     vars_to_keep = ['id_patient']
-    if args.outcome_type in ['survival', 'mlm']:
+    if config.dataset.outcome_type in ['survival', 'mlm']:
         vars_to_keep.extend(['time', 'status'])
     else:
-        vars_to_keep.append(args.outcome)
+        vars_to_keep.append(config.dataset.outcome)
 
     # Selects columns from meta_file df and merges them into meta_split based on a shared 'id_patient' column
     # includes all the columns from meta_split and only the selected columns from meta_file
@@ -196,18 +214,15 @@ def prepare_data(meta_split, meta_file, vars_to_include=[]):
     meta_split['id_svs_num'] = meta_split.id_svs.astype('category').cat.codes
 
     # converting the outcome variable to numerical value
-    if args.outcome_type == 'classification':
-        meta_split = meta_split.loc[~meta_split[args.outcome].isna()]
-        meta_split[args.outcome] = meta_split[args.outcome].astype(
+    if config.dataset.outcome_type == 'classification':
+        meta_split = meta_split.loc[~meta_split[config.dataset.outcome].isna()]
+        meta_split[config.dataset.outcome] = meta_split[config.dataset.outcome].astype(
             'category').cat.codes
 
-    elif args.outcome_type == 'survival':
+    elif config.dataset.outcome_type == 'survival':
         meta_split = meta_split.loc[~meta_split.status.isna()
                                     & ~meta_split.time.isna()]
     
-    print("Printing pre-processed dataset")
-    print(meta_split)
-
     return meta_split
 
 
@@ -218,8 +233,8 @@ def main():
     else:
         TIMESTR = time.strftime("%Y%m%d_%H%M%S")
     model_name = str(TIMESTR)
-    if args.meta_all is not None:
-        model_name = f"{TIMESTR}-{args.fold}"
+    if config.dataset.meta_all is not None:
+        model_name = f"{TIMESTR}-{config.model.fold}"
 
     # if we want to resume previous training
     if len(args.resume):
@@ -249,23 +264,25 @@ def main():
     args.hostname = socket.gethostname()
 
     # loading datasets
-    meta_svs = pd.read_pickle(args.meta_svs) 
+    meta_svs = pd.read_pickle(config.dataset.meta_svs) 
 
     if args.ffpe_only:
         meta_svs = meta_svs.loc[meta_svs.slide_type == 'ffpe']
     if args.ffpe_exclude:
         meta_svs = meta_svs.loc[meta_svs.slide_type != 'ffpe']
 
-    if args.meta_all is not None:
-        meta_all = pd.read_pickle(args.meta_all)
+    if config.dataset.meta_all is not None:
+        meta_all = pd.read_pickle(config.dataset.meta_all)
         if args.mode == 'extract':
             meta_train = meta_val = meta_all
         elif 'fold' in meta_all.columns:
-            val_fold = (args.fold + 1) % 5
-            test_fold = args.fold
-            train_folds = [
-                x for x in range(5) if x not in [val_fold, test_fold]
-            ]
+            if meta_all.fold.nunique() == 5:
+                val_fold = (config.model.fold + 1) % 5
+                test_fold = config.model.fold
+                train_folds = [
+                    x for x in range(5) if x not in [val_fold, test_fold]
+                ]
+
 
             meta_train = meta_val = meta_all.loc[meta_all.fold.isin(
                 train_folds)]
@@ -297,7 +314,12 @@ def main():
         meta_val = meta_val.loc[meta_val.cancer == args.cancer]
 
     print('shape of meta_svs = ', meta_svs.shape)
-    meta_svs['folder'] = 'IBD_PROJECT'
+
+    if config.dataset.is_cancer:
+        meta_svs['folder'] = meta_svs['cancer']
+    else:
+        meta_svs['folder'] = config.dataset.disease
+    
     meta_svs['sampling_weights'] = 1
     vars_to_include = ['id_patient', 'folder', 'id_svs', 'sampling_weights']
     if 'svs_path' in meta_svs:
@@ -318,21 +340,14 @@ def main():
                             meta_file=meta_svs,	
                             vars_to_include=vars_to_include)
 
-    # check if train data is empty
-    if df_train.empty:
-        # split data randomly into train/test
-        df_full = prepare_data(meta_split=meta_val,
-                            meta_file=meta_svs,
-                            vars_to_include=vars_to_include)
-        df_train, df_test = train_test_split(df_full, test_size=0.3, random_state=42)
     
     print("TRAINING DATA")
     print(df_train)
     print("TESTING DATA")
     print(df_test)
 
-    if args.outcome_type == 'classification':
-        num_classes = len(df_train[args.outcome].unique().tolist())
+    if config.dataset.outcome_type == 'classification':
+        num_classes = len(df_train[config.dataset.outcome].unique().tolist())
     else:
         num_classes = 1
     
@@ -341,14 +356,14 @@ def main():
     print('num_classes = ', num_classes)
     if args.weighted_loss:
         weight = df_train.shape[0] / df_train[
-            args.outcome].value_counts().sort_index()
+            config.dataset.outcome].value_counts().sort_index()
         print('weight is: ', weight)
     else:
         weight = None
-    criterion = FlexLoss(outcome_type=args.outcome_type, weight=weight)
+    criterion = FlexLoss(outcome_type=config.dataset.outcome_type, weight=weight)
 
-    if args.study is not None:
-        model_name = f"{args.study}/{model_name}"
+    if config.dataset.study is not None:
+        model_name = f"{config.dataset.study}/{model_name}"
 
     hf = HybridFitter(timestr=TIMESTR,
                       num_classes=num_classes,
@@ -357,6 +372,7 @@ def main():
                       model_name=model_name,
                       checkpoints_folder=checkpoints_folder,
                       checkpoint_to_resume=checkpoint_to_resume)
+
 
     data_dict = {"train": df_train, "val": df_test}
 
