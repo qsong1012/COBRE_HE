@@ -1,5 +1,14 @@
 """
-USAGE: python train.py --user-config-file configs/config_ibd_train.yml --sample-patient -b=4 --override-logs --timestr=2023_5_30 --fold=0 --study=ibd_project --timestr=2023_5_30
+USAGE: python train.py --user-config-file <filename> --sample-patient --batch-size <value> --override-logs --timestr <value> --fold <value> --study <value>
+
+REQUIRED OPTIONS:
+  --user-config-file <filename>    Specify the user configuration file
+  --fold <value>                   Specify the fold number
+  --study <value>                  Specify the study name
+
+EXAMPLES:
+- For IBD project
+python train.py --user-config-file configs/config_ibd_train.yml --sample-patient -b=4 --override-logs --timestr=2023_5_30 --fold=0 --study=ibd_project
 """
 
 import os
