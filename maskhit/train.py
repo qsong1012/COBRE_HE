@@ -1,9 +1,5 @@
 """
-Usage: python train.py --study=ibd --mil1=vit_h8l12 --mil2=ap --num-patches=0 
---meta-svs=../../SlidePreprocessing/for_vit/meta/IBD_PROJECT/svs_meta.pickle 
---meta-all=../../SlidePreprocessing/for_vit/meta/ibd_project_meta.pickle 
---magnification=5 --lr-attn=1e-5 --lr-pred=1e-3 --wd=0.01 --outcome='Dx (U=UC, C=Cr, I=Ind)' 
---outcome-type=classification --sample-patient --dropout=0.2 -b=4
+USAGE: python train.py --user-config-file configs/config_ibd_train.yml --sample-patient -b=4 --override-logs --timestr=2023_5_30 --fold=0 --study=ibd_project --timestr=2023_5_30
 """
 
 import os
@@ -234,7 +230,7 @@ def main():
         TIMESTR = time.strftime("%Y%m%d_%H%M%S")
     model_name = str(TIMESTR)
     if config.dataset.meta_all is not None:
-        model_name = f"{TIMESTR}-{config.model.fold}"
+        model_name = f"{TIMESTR}-{args.fold}"
 
     # if we want to resume previous training
     if len(args.resume):
@@ -277,8 +273,8 @@ def main():
             meta_train = meta_val = meta_all
         elif 'fold' in meta_all.columns:
             if meta_all.fold.nunique() == 5:
-                val_fold = (config.model.fold + 1) % 5
-                test_fold = config.model.fold
+                val_fold = (args.fold + 1) % 5
+                test_fold = args.fold
                 train_folds = [
                     x for x in range(5) if x not in [val_fold, test_fold]
                 ]
@@ -368,6 +364,7 @@ def main():
     hf = HybridFitter(timestr=TIMESTR,
                       num_classes=num_classes,
                       args=args,
+                      config_file = config,
                       loss_function=criterion,
                       model_name=model_name,
                       checkpoints_folder=checkpoints_folder,
